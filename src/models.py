@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from jax.random import split
 
 
 class NCA(nn.Module):
@@ -33,21 +34,31 @@ class NCA(nn.Module):
         return ds, obs
 
 
-def forward_nca(nca, nca_params, _rng, state, rollout_steps=1000, obs_every_k=10, dt=0.01, p_drop=0.0):
+def nca_rollout(nca, nca_params, _rng, state, rollout_steps=1000, dt=0.01, p_drop=0.0):
     H, W, D = state.shape
-    
+
     def forward_step(state, _rng):
+        obs = nca.apply(nca_params, state, method=nca.forward_obs)
         dstate = nca.apply(nca_params, state, method=nca.forward_dynamics)
-        drop_mask = jax.random.uniform(_rng, (H, W, 1)) < self.p_drop
-        state = state + dt * dstate * (1.-drop_mask)
-        state = state/jnp.linalg.norm(state, axis=-1, keepdims=True)
-        return state, obs
-    
-    def forward_chunk(x, _):
-        x, vid = jax.lax.scan(forward_step, x, jnp.arange(obs_every_k))
-        return x, vid[-1]
-    state, vid = jax.lax.scan(forward_chunk, state, jnp.arange(rollout_steps//obs_every_k))
+        drop_mask = jax.random.uniform(_rng, (H, W, 1)) < p_drop
+        next_state = state + dt * dstate * (1.-drop_mask)
+        next_state = next_state/jnp.linalg.norm(next_state, axis=-1, keepdims=True)
+        return next_state, obs
+
+    state, vid = jax.lax.scan(forward_step, state, split(_rng, rollout_steps))
     return state, vid
 
+def sample_init_state(_rng, height=32, width=32, d_state=16, init_state="point"):
+    if init_state == "zeros":
+        state = jnp.full((height, width, d_state), -1.)
+    if init_state == "point":
+        state = jnp.full((height, width, d_state), -1.)
+        state = state.at[height//2, width//2, :].set(1.)
+    elif init_state == "randn":
+        state = jax.random.normal(_rng, (height, width, d_state))
+    else:
+        raise NotImplementedError
+    state = state/jnp.linalg.norm(state, axis=-1, keepdims=True)
+    return state
 
 
