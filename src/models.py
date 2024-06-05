@@ -51,7 +51,7 @@ def nca_rollout(nca, nca_params, _rng, state, rollout_steps=1000, dt=0.01, p_dro
 def sample_init_state(_rng, height=32, width=32, d_state=16, init_state="point"):
     if init_state == "zeros":
         state = jnp.full((height, width, d_state), -1.)
-    if init_state == "point":
+    elif init_state == "point":
         state = jnp.full((height, width, d_state), -1.)
         state = state.at[height//2, width//2, :].set(1.)
     elif init_state == "randn":
