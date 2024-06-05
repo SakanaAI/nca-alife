@@ -1,0 +1,8 @@
+python main.py --lr=0.01  --bs=32 --model="transformer" --save_dir="~/data/transformer_0.01_32" 
+python main.py --lr=0.01  --bs=32 --model="cnn"         --save_dir="~/data/cnn_0.01_32"         
+python main.py --lr=0.01  --bs=64 --model="transformer" --save_dir="~/data/transformer_0.01_64" 
+python main.py --lr=0.01  --bs=64 --model="cnn"         --save_dir="~/data/cnn_0.01_64"         
+python main.py --lr=0.001 --bs=32 --model="transformer" --save_dir="~/data/transformer_0.001_32"
+python main.py --lr=0.001 --bs=32 --model="cnn"         --save_dir="~/data/cnn_0.001_32"        
+python main.py --lr=0.001 --bs=64 --model="transformer" --save_dir="~/data/transformer_0.001_64"
+python main.py --lr=0.001 --bs=64 --model="cnn"         --save_dir="~/data/cnn_0.001_64"        
