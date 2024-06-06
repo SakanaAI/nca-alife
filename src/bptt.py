@@ -22,9 +22,9 @@ jax_config.update("jax_debug_nans", True)
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
 group.add_argument("--seed", type=int, default=0)
-group.add_argument("--load_ckpt", type=str, default=None)
+# group.add_argument("--load_ckpt", type=str, default=None)
 group.add_argument("--save_dir", type=str, default=None)
-group.add_argument("--save_ckpt", type=lambda x: x=="True", default=False)
+# group.add_argument("--save_ckpt", type=lambda x: x=="True", default=False)
 group.add_argument("--n_iters_chunk", type=int, default=1)
 
 group = parser.add_argument_group("data")
@@ -34,8 +34,8 @@ group.add_argument("--dt", type=float, default=0.01)
 group.add_argument("--p_drop", type=float, default=0.0)
 group.add_argument("--init_state", type=str, default="point")
 group.add_argument("--rollout_steps", type=int, default=64)
-
 group.add_argument("--target_img_path", type=str, default=None)
+group.add_argument("--apply_loss", type=str, default="all")  # all or last
 
 group = parser.add_argument_group("model")
 group.add_argument("--n_layers", type=int, default=1)
@@ -67,9 +67,8 @@ def parse_args(*args, **kwargs):
 
 
 def load_img(img_path, height=32, width=32):
-    from PIL import Image 
-    img = Image.open(img_path) 
-    img = img.resize((height, width))
+    from PIL import Image
+    img = Image.open(img_path).convert('RGB').resize((height, width))
     img = jnp.array(img, dtype=np.float32)/255.
     return img
     
@@ -88,7 +87,8 @@ def main(args):
     print(jax.tree.map(lambda x: x.shape, params))
     print("Number of parameters:", sum([p.size for p in jax.tree.flatten(params)[0]]))
     
-    target_img = load_img(args.target_img_path)
+    target_img = load_img(args.target_img_path, height=args.height, width=args.width)
+    assert target_img.shape==(args.height, args.width, 3)
 
     if args.lr_schedule == "constant":
         lr_schedule = optax.constant_schedule(args.lr)
@@ -107,8 +107,10 @@ def main(args):
     def loss_fn(nca_params, batch):
         _rng, state = batch['_rng'], batch['state']
         next_state, vid = jax.vmap(rollout_fn, in_axes=(None, 0, 0))(nca_params, _rng, state)
-        mse = ((vid[:, :, ...]-target_img)**2)
-        # mse = ((vid[:, -1, ...]-target_img)**2).mean()
+        if args.apply_loss=='all':
+            mse = ((vid[:, :, ...]-target_img)**2)
+        elif args.apply_loss=='last':
+            mse = ((vid[:, -1, ...]-target_img)**2)
         loss = mse.mean()
         return loss, dict(loss=loss, mse=mse, vid=vid)
 
@@ -129,18 +131,27 @@ def main(args):
         state = init_state_fn(_rng)
         next_state, vid = rollout_fn(train_state.params, _rng, state)
         i_step = jnp.linspace(0, args.rollout_steps, 5).astype(int).clip(0, args.rollout_steps-1)
-        vid = np.array(vid.clip(0, 1)[i_step])
-        vid = rearrange(vid, "(R C) H W D -> (R H) (C W) D", R=1)
+        vid = np.array(vid[i_step].clip(0, 1))
 
         import matplotlib.pyplot as plt
-        plt.imshow(vid)
+        plt.imshow(rearrange(vid, "(R C) H W D -> (R H) (C W) D", R=1))
         plt.title(f"Steps: {i_step}")
         plt.savefig(f"{args.save_dir}/rollout_{i_iter:07d}.png")
         plt.close()
 
+        plt.subplot(131)
+        plt.imshow(vid[-1])
+        plt.subplot(132)
+        plt.imshow(target_img)
+        plt.subplot(133)
+        plt.imshow(((vid[-1]-target_img)**2).mean(axis=-1))
+        plt.colorbar()
+        plt.savefig(f"{args.save_dir}/error.png")
+        plt.close()
+
     losses = []
     pbar = tqdm(range(args.n_iters))
-    for i_iter in range(args.n_iters):
+    for i_iter in range(0, args.n_iters, args.n_iters_chunk):
         rng, _rng = split(rng)
         train_state, losses_i = jax.lax.scan(train_step, train_state, split(_rng, args.n_iters_chunk))
         losses.extend(losses_i.tolist())
