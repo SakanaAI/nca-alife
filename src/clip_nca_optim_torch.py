@@ -35,9 +35,9 @@ group.add_argument("--d_state", type=int, default=16)
 group.add_argument("--d_embd", type=int, default=32)
 group.add_argument("--kernel_size", type=int, default=3)
 group.add_argument("--nonlin", type=str, default="GELU")
-group.add_argument("--padding_mode", type=str, default="zeros")
 
 group.add_argument("--init_state", type=str, default='randn')
+group.add_argument("--padding_mode", type=str, default="zeros")
 group.add_argument("--dt", type=float, default=0.01)
 group.add_argument("--p_drop", type=float, default=0.0)
 group.add_argument("--n_steps", type=int, default=64)
@@ -66,13 +66,14 @@ def parse_args(*args, **kwargs):
 def main(args):
     print(args)
     util.save_pkl(args.save_dir, 'args', args)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
     dtype = getattr(torch, args.dtype)
 
     trans_aug = []
     if 'crop' in args.augs:
-        trans_aug.append( transforms.RandomResizedCrop(224, scale=(0.1, 1.)), )
+        trans_aug.append( transforms.RandomResizedCrop(224, scale=(0.4, 1.)), )
     if 'pers' in args.augs:
         trans_aug.append( transforms.RandomPerspective(distortion_scale=0.5, p=1., fill=0.), )
     if 'jitter' in args.augs:
