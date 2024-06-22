@@ -28,6 +28,31 @@ class NCA(nn.Module):
     def forward(self, x):
         return self.dynamics_net(x), self.obs_net(x)
 
+# class NCABlock(nn.Module):
+#     def __init__(self, d_embd, nonlin='GELU'):
+#         super().__init__()
+#         self.conv = nn.Conv2d(d_embd, d_embd, kernel_size=1)
+#         self.nonlin = getattr(nn, nonlin)()
+        
+#     def forward(self, x):
+#         x = self.conv(x)
+#         x = (x - x.mean(dim=-3, keepdim=True))/(x.std(dim=-3, keepdim=True) + 1e-8)  # layernorm
+#         x = self.nonlin(x)
+#         return x
+        
+# class NCA(nn.Module):
+#     def __init__(self, n_layers, d_state, d_embd, kernel_size=3, nonlin='GELU', padding_mode='zeros'):
+#         super().__init__()
+#         self.dynamics_net = nn.Sequential()
+#         self.dynamics_net.append(nn.Conv2d(d_state, d_embd, kernel_size=kernel_size, padding='same', padding_mode=padding_mode))
+#         for _ in range(n_layers):
+#             self.dynamics_net.append(NCABlock(d_embd, nonlin=nonlin))
+#         self.dynamics_net.append(nn.Conv2d(d_embd, d_state, kernel_size=1))
+#         self.obs_net = nn.Conv2d(d_state, 3, kernel_size=1)
+    
+#     def forward(self, x):
+#         return self.dynamics_net(x), self.obs_net(x)
+
 class NCAWrapper(nn.Module):
     def __init__(self, n_layers, d_state, d_embd, kernel_size=3, nonlin='GELU', padding_mode='zeros', dt=0.01, p_drop=0., vid_type=None, n_steps=64):
         super().__init__()
