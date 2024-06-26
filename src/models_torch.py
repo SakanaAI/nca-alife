@@ -16,64 +16,36 @@ class NCABlock(nn.Module):
         return x
         
 class NCA(nn.Module):
-    def __init__(self, n_layers, d_state, d_embd, kernel_size=3, nonlin='GELU', padding_mode='zeros'):
+    def __init__(self, n_layers, d_state, d_embd,
+                 locality=1, kernel_size=3, nonlin='GELU', padding_mode='zeros',
+                 dt=0.01, p_drop=0., n_steps=64):
         super().__init__()
+        self.dt, self.p_drop, self.n_steps, = dt, p_drop, n_steps
+        
         self.dynamics_net = nn.Sequential()
-        self.dynamics_net.append(nn.Conv2d(d_state, d_embd, kernel_size=1, padding='same', padding_mode=padding_mode))
+        self.dynamics_net.append(nn.Conv2d(d_state, d_embd, kernel_size=locality, padding='same', padding_mode=padding_mode))
         for _ in range(n_layers):
             self.dynamics_net.append(NCABlock(d_embd, kernel_size=kernel_size, nonlin=nonlin, padding_mode=padding_mode))
         self.dynamics_net.append(nn.Conv2d(d_embd, d_state, kernel_size=1, padding='same', padding_mode=padding_mode))
         self.obs_net = nn.Conv2d(d_state, 3, kernel_size=1, padding='same', padding_mode=padding_mode)
-    
-    def forward(self, x):
+
+    def forward(self, x: torch.Tensor):
         return self.dynamics_net(x), self.obs_net(x)
 
-# class NCABlock(nn.Module):
-#     def __init__(self, d_embd, nonlin='GELU'):
-#         super().__init__()
-#         self.conv = nn.Conv2d(d_embd, d_embd, kernel_size=1)
-#         self.nonlin = getattr(nn, nonlin)()
-        
-#     def forward(self, x):
-#         x = self.conv(x)
-#         x = (x - x.mean(dim=-3, keepdim=True))/(x.std(dim=-3, keepdim=True) + 1e-8)  # layernorm
-#         x = self.nonlin(x)
-#         return x
-        
-# class NCA(nn.Module):
-#     def __init__(self, n_layers, d_state, d_embd, kernel_size=3, nonlin='GELU', padding_mode='zeros'):
-#         super().__init__()
-#         self.dynamics_net = nn.Sequential()
-#         self.dynamics_net.append(nn.Conv2d(d_state, d_embd, kernel_size=kernel_size, padding='same', padding_mode=padding_mode))
-#         for _ in range(n_layers):
-#             self.dynamics_net.append(NCABlock(d_embd, nonlin=nonlin))
-#         self.dynamics_net.append(nn.Conv2d(d_embd, d_state, kernel_size=1))
-#         self.obs_net = nn.Conv2d(d_state, 3, kernel_size=1)
-    
-#     def forward(self, x):
-#         return self.dynamics_net(x), self.obs_net(x)
-
-class NCAWrapper(nn.Module):
-    def __init__(self, n_layers, d_state, d_embd, kernel_size=3, nonlin='GELU', padding_mode='zeros', dt=0.01, p_drop=0., vid_type=None, n_steps=64):
-        super().__init__()
-        self.nca = NCA(n_layers, d_state, d_embd, kernel_size=kernel_size, nonlin=nonlin, padding_mode=padding_mode)
-        self.dt, self.p_drop, self.vid_type = dt, p_drop, vid_type
-        self.n_steps = n_steps
-        
     def forward_step(self, state):
         B, D, H, W = state.shape
-        dstate, obs = self.nca(state)
+        dstate, obs = self(state)
         drop_mask = torch.rand(1, H, W, dtype=state.dtype, device=state.device) < self.p_drop
         next_state = state + self.dt * dstate * (1. - drop_mask.to(state.dtype))
         next_state = next_state / next_state.norm(dim=-3, keepdim=True, p=2)
         # obs_data = dict(state=state, obs=obs)
         return next_state, obs
         
-    def forward(self, state):
+    def forward_chunk(self, state):
         for t in range(self.n_steps):
-            state, _ = self.forward_step(state)
-        _, obs = self.forward_step(state)
+            state, obs = self.forward_step(state)
         return state, obs
+
 
 def sample_init_state(height:int=224, width:int=224, d_state:int=16, bs:int=1, init_state:str ="randn",
                       device:torch.device=torch.device("cpu"), dtype:torch.dtype=torch.float):
@@ -91,7 +63,7 @@ def sample_init_state(height:int=224, width:int=224, d_state:int=16, bs:int=1, i
 
 
 if __name__ == "__main__":
-    nca = NCAWrapper(2, 16, 32, n_steps=64)
+    nca = NCA(2, 16, 32, n_steps=64)
     print(nca)
     print(sum(p.numel() for p in nca.parameters()))
 

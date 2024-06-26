@@ -13,8 +13,9 @@ from transformers import AutoProcessor, CLIPModel
 import matplotlib.pyplot as plt
 import util
 import argparse
+from collections import defaultdict
 
-from models_torch import NCAWrapper, sample_init_state
+from models_torch import NCA, sample_init_state
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -28,6 +29,7 @@ group.add_argument("--img_size", type=int, default=64)
 group.add_argument("--n_layers", type=int, default=2)
 group.add_argument("--d_state", type=int, default=16)
 group.add_argument("--d_embd", type=int, default=32)
+group.add_argument("--locality", type=int, default=1)
 group.add_argument("--kernel_size", type=int, default=3)
 group.add_argument("--nonlin", type=str, default="GELU")
 
@@ -50,6 +52,10 @@ group.add_argument("--n_augs", type=int, default=1)
 group.add_argument("--augs", type=str, default="crop+pers")  # crop+pers+jitter
 
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
+
+group.add_argument("--coef_alignment", type=float, default=1.)
+group.add_argument("--coef_softmax", type=float, default=0.)
+group.add_argument("--coef_temporal", type=float, default=0.)
 
 group = parser.add_argument_group("optimization")
 group.add_argument("--bs", type=int, default=8)
@@ -87,7 +93,7 @@ def main(args):
 
     def init_pool():
         states = sample_init_state(args.img_size, args.img_size, args.d_state, args.pool_size, args.init_state, device=device, dtype=dtype)
-        times = torch.randint(0, args.rollout_steps, (args.pool_size, ))
+        times = torch.randint(0, args.rollout_steps, (args.pool_size, ), device=device)
         return dict(states=states, times=times)
     pool = init_pool()
 
@@ -101,16 +107,18 @@ def main(args):
         def obj_loss_fn(x):
             return ((x - target_img)**2).mean()
     else:
-        model = CLIPModel.from_pretrained(f"openai/{args.clip_model}")
+        clip_model = CLIPModel.from_pretrained(f"openai/{args.clip_model}")
         processor = AutoProcessor.from_pretrained(f"openai/{args.clip_model}")
-        model = model.to(device, dtype)
+        clip_model = clip_model.to(device, dtype)
+        for p in clip_model.parameters():
+            p.requires_grad = False
 
         prompts = args.prompt.split(';')
         inputs = processor(text=prompts, return_tensors="pt", padding=True)
         inputs = {k: v.to(args.device) for k, v in inputs.items()}
         
         with torch.no_grad():
-            z_text = model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
+            z_text = clip_model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
             z_text = z_text/z_text.norm(dim=-1, keepdim=True)
 
         img_mean = torch.tensor(processor.image_processor.image_mean, device=device, dtype=dtype)
@@ -120,23 +128,35 @@ def main(args):
 
         assert args.rollout_steps%len(prompts)==0
         n_segs, seg_len = len(prompts), args.rollout_steps//len(prompts)
-        def obj_loss_fn(img, time):
-            i_seg = time//seg_len
+        def obj_loss_fn(img, time, vid):
+            label = time//seg_len
             x = (img-img_mean[:, None, None])/img_std[:, None, None]
-            z_img = model.get_image_features(x)
+            z_img = clip_model.get_image_features(x)
             z_img = z_img/z_img.norm(dim=-1, keepdim=True)
 
-            losses = -(z_img*z_text[i_seg]).sum(dim=-1)
-            loss = losses.mean()
-            return loss, losses
+            # z_img: (Batch, D), z_text: (Prompts, D), label: (Batch, )
+
+            loss_alignment = -(z_img*z_text[label]).sum(dim=-1).mean()
+            
+            logits = (z_img @ z_text.T) * clip_model.logit_scale.exp()  # Batch, Prompts
+            loss_softmax = torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
+
+            f_nxt, f_now = vid[:, 1:, :, :, :], vid[:, :-1, :, :, :]
+            loss_temporal = -((f_nxt-f_now)**2).mean()
+
+            loss = loss_alignment * args.coef_alignment + loss_softmax * args.coef_softmax + loss_temporal * args.coef_temporal
+            return dict(loss=loss, loss_alignment=loss_alignment, loss_softmax=loss_softmax, loss_temporal=loss_temporal)
 
     # ------------------------ Model ------------------------
-    nca = NCAWrapper(args.n_layers, args.d_state, args.d_embd, 
-                     kernel_size=args.kernel_size, nonlin=args.nonlin, padding_mode=args.padding_mode,
-                     dt=args.dt, p_drop=args.p_drop, n_steps=args.rollout_steps).to(device, dtype)
-    nca = torch.jit.script(nca)
+    nca = NCA(args.n_layers, args.d_state, args.d_embd, 
+              locality=args.locality, kernel_size=args.kernel_size, nonlin=args.nonlin, padding_mode=args.padding_mode,
+              dt=args.dt, p_drop=args.p_drop, n_steps=args.rollout_steps).to(device, dtype)
+    # nca = torch.jit.script(nca)
     opt = torch.optim.AdamW(nca.parameters(), lr=args.lr, weight_decay=0.)
-    print("# of parameters: ", sum(p.numel() for p in nca.parameters()))
+    num_params = sum(p.numel() for p in nca.parameters())
+    print(f"# of parameters: {num_params}")
+    print(f"Image size: {args.img_size}x{args.img_size}x3={args.img_size*args.img_size*3}")
+    print(f"Image Compression: {num_params/(args.img_size*args.img_size*3)}")
 
     time2grad = {}
 
@@ -145,10 +165,13 @@ def main(args):
             def hook(grad):
                 time2grad[t] = grad
             return hook
-            
+
+        vid = []
         for t in range(args.bptt_steps):
             state, obs = nca.forward_step(state)
             obs_time = time
+            vid.append(obs)
+            
             time += 1
             init_states = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state, device=device, dtype=dtype)
             state[time>=args.rollout_steps] = init_states[time>=args.rollout_steps]
@@ -156,16 +179,20 @@ def main(args):
             
             if t%(args.bptt_steps//8)==0:
                 state.register_hook(save_grad(t))
-
-        return state, time, obs, obs_time
+                
+        vid = torch.stack(vid, dim=-4)
+        return state, time, obs, obs_time, vid
         
-    def create_image():
+    def forward_batch():
         idx = torch.randperm(args.pool_size)[:args.bs]
         states, times = pool['states'][idx], pool['times'][idx]
-        states, times, obs, obs_times = forward_chunk(states, times)
+        states, times, obs, obs_times, vid = forward_chunk(states, times)
         pool['states'][idx], pool['times'][idx] = states.detach(), times
-        return rearrange(torch.sigmoid(obs), 'B D H W -> B H W D'), obs_times
 
+        obs = rearrange(torch.sigmoid(obs), 'B D H W -> B D H W')
+        vid = rearrange(torch.sigmoid(vid), 'B T D H W -> B T D H W')
+        return obs, obs_times, vid
+    
     @torch.no_grad
     def create_full_video():
         vid = []
@@ -176,40 +203,41 @@ def main(args):
         return rearrange(torch.sigmoid(torch.stack(vid)), 'T B D H W -> B T H W D')
 
     def loss_fn():
-        x, times = create_image()
-        x = rearrange(x, "B H W D -> B D H W")
+        x, times, vid = forward_batch()
         x = augment_img(x)
-        return obj_loss_fn(x, times)
+        return obj_loss_fn(x, times, vid)
 
-    losses = []
+    losses = defaultdict(list)
     grad_norms = []
     grad_vs_times = []
     pbar = tqdm(range(args.n_iters))
     for i in pbar:
         opt.zero_grad()
-        
-        loss, _ = loss_fn()
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+
+        loss = loss_fn()
+        loss['loss'].backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm)
         opt.step()
 
-        losses.append(loss.item())
+        [losses[k].append(v.detach()) for k, v in loss.items()]
+            
         grad_norms.append(grad_norm.item())
         grad_vs_times.append([time2grad[k].norm(dim=-3).mean().item() for k in sorted(list(time2grad.keys()))])
-        
-        pbar.set_postfix(loss=loss.item())
+
+        if i%100==0:
+            pbar.set_postfix(loss=loss['loss'].item())
 
         if args.save_dir is not None and (i%(args.n_iters//5)==0 or i==args.n_iters-1):
             vid = create_full_video().cpu().numpy()
 
             util.save_pkl(args.save_dir, 'vid', vid)
-            util.save_pkl(args.save_dir, 'losses', np.array(losses))
+            util.save_pkl(args.save_dir, 'losses', {k: torch.stack(v).cpu().numpy() for k, v in losses.items()})
             util.save_pkl(args.save_dir, 'grad_norms', np.array(grad_norms))
             util.save_pkl(args.save_dir, 'grad_vs_times', np.array(grad_vs_times))
             torch.save(nca.state_dict(), f"{args.save_dir}/nca.pt")
 
             plt.figure(figsize=(10, 5))
-            plt.subplot(211); plt.plot(losses)
+            plt.subplot(211); plt.plot(torch.stack(losses['loss']).cpu().numpy())
             plt.subplot(212); plt.imshow(rearrange(vid[:1, ::(vid.shape[1]//8), :, :, :], "B T H W D -> (B H) (T W) D"))
             plt.savefig(f'{args.save_dir}/overview_{i:06d}.png')
             plt.close()
