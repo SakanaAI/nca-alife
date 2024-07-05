@@ -17,6 +17,11 @@ from collections import defaultdict
 
 from models_torch import NCA, sample_init_state
 
+import imageio
+
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
 group.add_argument("--seed", type=int, default=0)
@@ -26,40 +31,38 @@ group.add_argument("--device", type=str, default='cuda:0')
 
 group = parser.add_argument_group("model")
 group.add_argument("--img_size", type=int, default=64)
-group.add_argument("--n_layers", type=int, default=2)
 group.add_argument("--d_state", type=int, default=16)
-group.add_argument("--d_embd", type=int, default=32)
-group.add_argument("--locality", type=int, default=1)
+group.add_argument("--perception", type=str, default='gradient')
 group.add_argument("--kernel_size", type=int, default=3)
-group.add_argument("--nonlin", type=str, default="GELU")
 
 group.add_argument("--init_state", type=str, default="point")
 group.add_argument("--padding_mode", type=str, default="zeros")
 group.add_argument("--dt", type=float, default=0.01)
-group.add_argument("--p_drop", type=float, default=0.0)
-
-group.add_argument("--rollout_steps", type=int, default=64)
-group.add_argument("--bptt_steps", type=int, default=16)
-
-group.add_argument("--pool_size", type=int, default=1024)
+group.add_argument("--dropout", type=float, default=0.5)
 
 group = parser.add_argument_group("data")
 group.add_argument("--target_img_path", type=str, default=None)
 # group.add_argument("--prompt", type=str, default="a red apple;a green apple;a blue apple;a yellow apple")
 # group.add_argument("--prompt", type=str, default="a red apple;a green tree;a fat cat;the yellow sun")
 group.add_argument("--prompt", type=str, default="a green tree")
-group.add_argument("--n_augs", type=int, default=1)
-group.add_argument("--augs", type=str, default="crop+pers")  # crop+pers+jitter
+
+group.add_argument("--augs", type=str, default='crop+pers')
+group.add_argument("--aug_crop_scale", type=float, default=1.)
 
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
 
 group.add_argument("--coef_alignment", type=float, default=1.)
 group.add_argument("--coef_softmax", type=float, default=0.)
+group.add_argument("--coef_novelty", type=float, default=0.)
 group.add_argument("--coef_temporal", type=float, default=0.)
 
 group = parser.add_argument_group("optimization")
+group.add_argument("--rollout_steps", type=int, default=64)
+group.add_argument("--bptt_steps", type=int, default=16)
+group.add_argument("--pool_size", type=int, default=1024)
+
 group.add_argument("--bs", type=int, default=8)
-group.add_argument("--lr", type=float, default=1e-3)
+group.add_argument("--lr", type=float, default=3e-4)
 group.add_argument("--n_iters", type=int, default=10000)
 group.add_argument("--clip_grad_norm", type=float, default=1.)
 
@@ -68,7 +71,6 @@ def parse_args(*args, **kwargs):
     for k, v in vars(args).items():
         if isinstance(v, str) and v.lower() == "none":
             setattr(args, k, None)  # set all "none" to None
-    
     return args
 
 def main(args):
@@ -81,15 +83,16 @@ def main(args):
 
     trans_aug = []
     if 'crop' in args.augs:
-        trans_aug.append( transforms.RandomResizedCrop(224, scale=(0.4, 1.)), )
+        # trans_aug.append( transforms.RandomResizedCrop(224, scale=(0.4, 1.)), ratio=(3./4., 4./3.))
+        trans_aug.append(transforms.RandomResizedCrop(224, scale=(args.aug_crop_scale, args.aug_crop_scale), ratio=(3./4., 4./3.)))
+        # TODO: add a rotation augmentation
     if 'pers' in args.augs:
         trans_aug.append( transforms.RandomPerspective(distortion_scale=0.5, p=1., fill=0.), )
-    if 'jitter' in args.augs:
-        trans_aug.append(transforms.ColorJitter(brightness=.5, contrast=0.5, saturation=0.5, hue=0.1))
+    # if 'jitter' in args.augs:
+        # trans_aug.append(transforms.ColorJitter(brightness=.5, contrast=0.5, saturation=0.5, hue=0.1))
     trans_aug = transforms.Compose(trans_aug)
     def augment_img(x):
-        xs = torch.cat([trans_aug(x) for i in range(args.n_augs)])
-        return xs
+        return trans_aug(x)
 
     def init_pool():
         states = sample_init_state(args.img_size, args.img_size, args.d_state, args.pool_size, args.init_state, device=device, dtype=dtype)
@@ -141,16 +144,23 @@ def main(args):
             logits = (z_img @ z_text.T) * clip_model.logit_scale.exp()  # Batch, Prompts
             loss_softmax = torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
 
+            # z_img_rand = z_img[torch.randperm(args.bs)]
+            # (z_img*z_img_rand).sum(dim=-1)
+            loss_novelty = (z_img@z_img.T).mean()
+
             f_nxt, f_now = vid[:, 1:, :, :, :], vid[:, :-1, :, :, :]
             loss_temporal = -((f_nxt-f_now)**2).mean()
 
-            loss = loss_alignment * args.coef_alignment + loss_softmax * args.coef_softmax + loss_temporal * args.coef_temporal
-            return dict(loss=loss, loss_alignment=loss_alignment, loss_softmax=loss_softmax, loss_temporal=loss_temporal)
+            loss = loss_alignment * args.coef_alignment + loss_softmax * args.coef_softmax
+            loss = loss + loss_novelty * args.coef_novelty + loss_temporal * args.coef_temporal
+            return dict(loss=loss, loss_alignment=loss_alignment, loss_softmax=loss_softmax,
+                        loss_novelty=loss_novelty, loss_temporal=loss_temporal)
 
     # ------------------------ Model ------------------------
-    nca = NCA(args.n_layers, args.d_state, args.d_embd, 
-              locality=args.locality, kernel_size=args.kernel_size, nonlin=args.nonlin, padding_mode=args.padding_mode,
-              dt=args.dt, p_drop=args.p_drop, n_steps=args.rollout_steps).to(device, dtype)
+    # nca = NCA().to(device, dtype)
+    nca = NCA(d_state=args.d_state, perception=args.perception, kernel_size=args.kernel_size, padding_mode=args.padding_mode,
+                 d_embds=[48, 128], cell_norm=False, state_unit_norm=True, dt=args.dt, dropout=args.dropout).to(device, dtype)
+    
     # nca = torch.jit.script(nca)
     opt = torch.optim.AdamW(nca.parameters(), lr=args.lr, weight_decay=0.)
     num_params = sum(p.numel() for p in nca.parameters())
@@ -173,7 +183,8 @@ def main(args):
             vid.append(obs)
             
             time += 1
-            init_states = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state, device=device, dtype=dtype)
+            init_states = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state,
+                                            state_unit_norm=True, device=device, dtype=dtype)
             state[time>=args.rollout_steps] = init_states[time>=args.rollout_steps]
             time[time>=args.rollout_steps] = 0
             
@@ -194,13 +205,14 @@ def main(args):
         return obs, obs_times, vid
     
     @torch.no_grad
-    def create_full_video():
+    def create_full_video(bs=1):
         vid = []
-        state = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state, device=device, dtype=dtype)
-        for t in range(args.rollout_steps):
+        state = sample_init_state(args.img_size, args.img_size, args.d_state, bs, args.init_state, device=device, dtype=dtype)
+        for t in range(int(args.rollout_steps*1.5)):
             state, obs = nca.forward_step(state)
             vid.append(obs)
-        return rearrange(torch.sigmoid(torch.stack(vid)), 'T B D H W -> B T H W D')
+        vid = rearrange(torch.sigmoid(torch.stack(vid)), 'T B D H W -> B T H W D')
+        return vid
 
     def loss_fn():
         x, times, vid = forward_batch()
@@ -220,7 +232,7 @@ def main(args):
         opt.step()
 
         [losses[k].append(v.detach()) for k, v in loss.items()]
-            
+        
         grad_norms.append(grad_norm.item())
         grad_vs_times.append([time2grad[k].norm(dim=-3).mean().item() for k in sorted(list(time2grad.keys()))])
 
@@ -228,9 +240,13 @@ def main(args):
             pbar.set_postfix(loss=loss['loss'].item())
 
         if args.save_dir is not None and (i%(args.n_iters//5)==0 or i==args.n_iters-1):
-            vid = create_full_video().cpu().numpy()
+            vid = create_full_video(bs=1)[0] # T H W D
+            vid = (vid*255).to(torch.uint8).cpu().numpy()
 
             util.save_pkl(args.save_dir, 'vid', vid)
+            imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
+            imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
+            
             util.save_pkl(args.save_dir, 'losses', {k: torch.stack(v).cpu().numpy() for k, v in losses.items()})
             util.save_pkl(args.save_dir, 'grad_norms', np.array(grad_norms))
             util.save_pkl(args.save_dir, 'grad_vs_times', np.array(grad_vs_times))
@@ -238,9 +254,12 @@ def main(args):
 
             plt.figure(figsize=(10, 5))
             plt.subplot(211); plt.plot(torch.stack(losses['loss']).cpu().numpy())
-            plt.subplot(212); plt.imshow(rearrange(vid[:1, ::(vid.shape[1]//8), :, :, :], "B T H W D -> (B H) (T W) D"))
+            plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
             plt.savefig(f'{args.save_dir}/overview_{i:06d}.png')
             plt.close()
+
+
+
     
 if __name__ == "__main__":
     main(parse_args())
