@@ -76,8 +76,14 @@ def parse_args(*args, **kwargs):
 def main(args):
     print(args)
     util.save_pkl(args.save_dir, 'args', args)
+    # random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    # torch.cuda.manual_seed(args.seed)
+    # torch.cuda.manual_seed_all(args.seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+    
     device = torch.device(args.device)
     dtype = getattr(torch, args.dtype)
 
@@ -257,6 +263,7 @@ def main(args):
             plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
             plt.savefig(f'{args.save_dir}/overview_{i:06d}.png')
             plt.close()
+    # print(grad_norm.item())
 
 
 

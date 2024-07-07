@@ -73,6 +73,10 @@ def sample_init_state(height=256, width=256, d_state=16, bs=1, init_state="randn
     elif init_state == "point":
         state = torch.zeros((bs, d_state, height, width), device=device, dtype=dtype) - 1.
         state[:, :, height//2, width//2]  = 1.
+    elif init_state == "pointgrid":
+        state = torch.zeros((bs, d_state, height, width), device=device, dtype=dtype) - 1.
+        start, spacing = height//16, height//8
+        state[:, :, start::spacing, start::spacing]  = 1.
     elif init_state == "randn":
         state = torch.randn((bs, d_state, height, width), device=device, dtype=dtype)
     else:
