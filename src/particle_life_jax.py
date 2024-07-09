@@ -9,7 +9,6 @@ from einops import repeat
 
 from functools import partial
 
-
 class ParticleLife():
     def __init__(self, n_particles, n_colors, n_dims=2, dt=0.01, half_life=0.04, rmax=0.1):
         self.n_particles = n_particles
@@ -18,10 +17,10 @@ class ParticleLife():
         self.dt = dt
         self.half_life = half_life
         self.rmax = rmax
-        # NOTE: the actual space is [0, 1]
+        # NOTE: the particle space is [0, 1]
     
     def get_random_env_params(self, rng, distribution='uniform'):
-        beta = 0.3
+        beta = jnp.array(0.3)
         if distribution=='uniform':
             alphas = jax.random.uniform(rng, (self.n_colors, self.n_colors), minval=-1., maxval=1.)
         elif distribution=='normal':
@@ -104,7 +103,7 @@ class ParticleLife():
         img = img.at[x, y, :].set(color)
         return img
         
-    def render_state_heavy(self, state, img_size=256, radius=3, blur=1.,
+    def render_state_heavy(self, state, img_size=256, radius=1, sharpness=5.,
                            color_palette='264653-287271-2a9d8f-8ab17d-e9c46a-f4a261-ee8959-e76f51', background_color='k'):
         color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
         background_color = jnp.array(mcolors.to_rgb(background_color)).astype(jnp.float32)
@@ -121,7 +120,7 @@ class ParticleLife():
             
             # d2 = (d2<radius**2).astype(jnp.float32)[:, :, None]
             # img = d2*color + (1.-d2)*img
-            coeff = 1.- (1./(1.+jnp.exp(-blur*(d-radius))))
+            coeff = 1.- (1./(1.+jnp.exp(-sharpness*(d-radius))))
             img = coeff[:, :, None]*color + (1-coeff[:, :, None])*img
             return img, None
     
@@ -132,4 +131,41 @@ class ParticleLife():
         return img
     
     
-    
+
+if __name__=='__main__':
+    import numpy as np
+    from tqdm.auto import tqdm
+    plife = ParticleLife(1000, 3, n_dims=2, dt=0.01, half_life=0.04, rmax=0.1)
+    print('yo')
+
+    rng = jax.random.PRNGKey(0)
+    env_params = plife.get_random_env_params(rng)
+
+    # print(env_params['alphas'])
+    # env_params['alphas'] = jnp.array([[0, -1., 0], [-1, 0, 0], [0.5, 0.5, 1.]])
+    # env_params['alphas'] = jnp.array([[.5, .25, -.2], [1., .5, .1], [-0.5, 0.5, .25]])
+    # print(env_params['alphas'])
+
+    print('env_params', jax.tree.map(lambda x: x.shape, env_params))
+
+    state = plife.get_random_init_state(rng)
+    def step(state, _):
+        state = plife.forward_step(state, env_params)
+        return state, state
+
+    state, statevid = jax.lax.scan(step, state, length=1000)
+    print('statevid', jax.tree.map(lambda x: x.shape, statevid))
+    # statevid = jax.tree.map(lambda x: x[::10], statevid)
+    # print('statevid', jax.tree.map(lambda x: x.shape, statevid))
+
+    color_palette = 'FF0000-00FF00-0000FF-FFFF00-00FFFF-FF00FF-800000-808000'
+    render_fn = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10., color_palette=color_palette)
+    # render_fn = partial(plife.render_state_heavy, img_size=256, radius=1., sharpness=10., color_palette=color_palette)
+    vid = jax.vmap(render_fn)(statevid)
+
+    print('vid', jax.tree.map(lambda x: x.shape, vid))
+    vid = np.array((vid*255).astype(jnp.uint8))
+    print('np vid', jax.tree.map(lambda x: x.shape, vid))
+    import imageio
+    imageio.mimwrite(f'./temp/vid.mp4', vid, fps=100, codec='libx264')
+
