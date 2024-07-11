@@ -72,7 +72,7 @@ class ParticleLife():
         return dict(c=c, x=x, v=v)
     
     def render_state_mpl(self, state, img_size=256, radius=10.,
-                         color_palette='264653-287271-2a9d8f-8ab17d-e9c46a-f4a261-ee8959-e76f51', background_color='k',
+                         color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='k',
                          **kwargs):
         color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
         background_color = mcolors.to_rgb(background_color)
@@ -85,7 +85,7 @@ class ParticleLife():
         # plt.ylim(-0.0, img_size)
 
     def render_state_light(self, state, img_size=256, radius=0,
-                           color_palette='264653-287271-2a9d8f-8ab17d-e9c46a-f4a261-ee8959-e76f51', background_color='k'):
+                           color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='k'):
         color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
         background_color = jnp.array(mcolors.to_rgb(background_color)).astype(jnp.float32)
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
@@ -103,14 +103,14 @@ class ParticleLife():
         img = img.at[x, y, :].set(color)
         return img
         
-    def render_state_heavy(self, state, img_size=256, radius=1, sharpness=5.,
-                           color_palette='264653-287271-2a9d8f-8ab17d-e9c46a-f4a261-ee8959-e76f51', background_color='k'):
+    def render_state_heavy(self, state, img_size=256, radius=0.5, sharpness=10.,
+                           color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='k'):
         color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
         background_color = jnp.array(mcolors.to_rgb(background_color)).astype(jnp.float32)
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
         
         pos, vel, pcol = state['x'], state['v'], state['c']
-        xgrid = ygrid = jnp.arange(img_size)
+        xgrid = ygrid = jnp.linspace(0, 1, img_size)
         xgrid, ygrid = jnp.meshgrid(xgrid, ygrid, indexing='ij')
     
         def render_circle(img, circle_data):
@@ -124,19 +124,16 @@ class ParticleLife():
             img = coeff[:, :, None]*color + (1-coeff[:, :, None])*img
             return img, None
     
-        x, y = pos.T * img_size
+        x, y = pos.T
         radius = jnp.full(x.shape, fill_value=radius)
         color = color_palette[pcol]
         img, _ = jax.lax.scan(render_circle, img, (x, y, radius, color))
         return img
     
-    
-
 if __name__=='__main__':
     import numpy as np
     from tqdm.auto import tqdm
-    plife = ParticleLife(1000, 3, n_dims=2, dt=0.01, half_life=0.04, rmax=0.1)
-    print('yo')
+    plife = ParticleLife(6000, 6, n_dims=2, dt=0.001, half_life=0.04, rmax=0.1)
 
     rng = jax.random.PRNGKey(0)
     env_params = plife.get_random_env_params(rng)
@@ -159,8 +156,8 @@ if __name__=='__main__':
     # print('statevid', jax.tree.map(lambda x: x.shape, statevid))
 
     color_palette = 'FF0000-00FF00-0000FF-FFFF00-00FFFF-FF00FF-800000-808000'
-    render_fn = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10., color_palette=color_palette)
-    # render_fn = partial(plife.render_state_heavy, img_size=256, radius=1., sharpness=10., color_palette=color_palette)
+    # render_fn = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10., color_palette=color_palette)
+    render_fn = partial(plife.render_state_heavy, img_size=512, radius=1., sharpness=10., color_palette=color_palette)
     vid = jax.vmap(render_fn)(statevid)
 
     print('vid', jax.tree.map(lambda x: x.shape, vid))
