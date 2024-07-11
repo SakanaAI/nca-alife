@@ -110,7 +110,7 @@ class ParticleLife():
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
         
         pos, vel, pcol = state['x'], state['v'], state['c']
-        xgrid = ygrid = jnp.linspace(0, 1, img_size)
+        xgrid = ygrid = jnp.arange(img_size)
         xgrid, ygrid = jnp.meshgrid(xgrid, ygrid, indexing='ij')
     
         def render_circle(img, circle_data):
@@ -124,7 +124,7 @@ class ParticleLife():
             img = coeff[:, :, None]*color + (1-coeff[:, :, None])*img
             return img, None
     
-        x, y = pos.T
+        x, y = pos.T * img_size
         radius = jnp.full(x.shape, fill_value=radius)
         color = color_palette[pcol]
         img, _ = jax.lax.scan(render_circle, img, (x, y, radius, color))
