@@ -2,6 +2,8 @@
 from transformers import AutoProcessor, FlaxCLIPModel
 import jax.numpy as jnp
 
+from einops import rearrange
+
 class MyFlaxCLIP():
     def __init__(self, clip_model):
         self.processor = AutoProcessor.from_pretrained(f"openai/{clip_model}")
@@ -24,6 +26,6 @@ class MyFlaxCLIP():
         img shape (H W C) and values in [0, 1].
         returns shape (D)
         """
-        img = rearrange((img-img_mean)/img_std, "H W C -> 1 C H W")
+        img = rearrange((img-self.img_mean)/self.img_std, "H W C -> 1 C H W")
         z_img = self.clip_model.get_image_features(img)[0]
         return z_img / jnp.linalg.norm(z_img, axis=-1, keepdims=True)

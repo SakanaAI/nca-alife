@@ -66,7 +66,7 @@ group.add_argument("--coef_alignment", type=float, default=1.)
 
 
 group = parser.add_argument_group("optimization")
-group.add_argument("--rollout_steps", type=int, default=100)
+group.add_argument("--rollout_steps", type=int, default=1000)
 
 group.add_argument("--bs", type=int, default=8)
 group.add_argument("--lr", type=float, default=3e-4)
@@ -82,7 +82,7 @@ def parse_args(*args, **kwargs):
     return args
 
 # to generate beautiful images:
-# render_fn_clip = partial(plife.render_state_heavy, img_size=1024, radius=4., sharpness=10.)
+# render_fn_clip = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10.)
 # particles: 10000, rollout_len 1000
 
 def main(args):
@@ -94,8 +94,12 @@ def main(args):
     z_text = clip_model.embed_text([args.prompt])
 
 
-    render_fn_clip = partial(plife.render_state_heavy, img_size=1024, radius=4., sharpness=10.)
-    render_fn_vid = partial(plife.render_state_heavy, img_size=256, radius=0.5, sharpness=10.)
+    # render_fn_clip = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10.)
+    # render_fn_vid = partial(plife.render_state_heavy, img_size=256, radius=0.5, sharpness=10.)
+
+
+    # render_fn_clip = partial(plife.render_state_heavy, img_size=224, radius=0.4375, sharpness=3.)
+    render_fn_clip = partial(plife.render_state_light, img_size=224, radius=0)
 
     def get_final_state(rng, env_params):
         state = plife.get_random_init_state(rng)
@@ -105,13 +109,13 @@ def main(args):
         state, _ = jax.lax.scan(step, state, length=args.rollout_steps)
         return state
     
-    def get_state_video(rng, env_params):
-        state = plife.get_random_init_state(rng)
-        def step(state, _):
-            state = plife.forward_step(state, env_params)
-            return state, state
-        state, statevid = jax.lax.scan(step, state, length=args.rollout_steps)
-        return statevid
+    # def get_state_video(rng, env_params):
+    #     state = plife.get_random_init_state(rng)
+    #     def step(state, _):
+    #         state = plife.forward_step(state, env_params)
+    #         return state, state
+    #     state, statevid = jax.lax.scan(step, state, length=args.rollout_steps)
+    #     return statevid
 
     bs = 32
     rng, _rng = split(rng)
@@ -119,80 +123,147 @@ def main(args):
     print(jax.tree.map(lambda x: x.shape, env_params))
     rng, _rng = split(rng)
 
+    print('starting sim')
     state = jax.vmap(get_final_state)(split(_rng, bs), env_params)
-    print('done with sim, now rendering')
+    print('starting rendering')
     img = jax.vmap(render_fn_clip)(state)
+    print('starting saving')
 
-    # img = rearrange(img, '(B1 B2) H W C -> (B1 H) (B2 W) C', B1=4)
-    # print(img.shape)
-    # print(img.max(), img.min())
-    # plt.imsave('./temp/imgs.png', img)
+    z_img = jax.vmap(clip_model.embed_img)(img)
+    print(z_text.shape, z_img.shape)
+    scores = (z_text @ z_img.T).flatten().tolist()
+    print(scores)
+
+    plt.figure(figsize=(20, 10))
+    for i in range(bs):
+        plt.subplot(4, 8, i+1)
+        plt.imshow(img[i])
+        plt.axis('off')
+        plt.title(f'{scores[i]:.2f}')
+    plt.savefig('./temp/imgs_fig.png')
+
+    img = rearrange(img, '(B1 B2) H W C -> (B1 H) (B2 W) C', B1=4)
+    print(img.shape)
+    print(img.max(), img.min())
+    plt.imsave('./temp/imgs.png', img)
 
 
+    rng, _rng = split(rng)
+    env_params_default = plife.get_random_env_params(_rng)
+    def mutate(rng, x):
+        rng, _rng = split(rng)
+        mask = (jax.random.uniform(_rng, x.shape) < 0.15).astype(x.dtype)
+        noise = jax.random.uniform(rng, x.shape, minval=-1., maxval=1.)
+        return (1.-mask)*x + mask*noise
+        
+    def calc_fitness(rng, x):
+        env_params = {k: v for k, v in env_params_default.items()}
+        env_params['alphas'] = rearrange(x, '(K K2) -> K K2', K=args.n_colors)
+        state = get_final_state(rng, env_params)
+        img = render_fn_clip(state)
+        z_img = clip_model.embed_img(img)
+        return (z_text @ z_img.T).mean(), img
+    
+    mutate = jax.jit(jax.vmap(mutate))
+    calc_fitness = jax.jit(jax.vmap(calc_fitness))
+
+    rng, _rng = split(rng)
+    population = jax.random.uniform(_rng, (bs, args.n_colors*args.n_colors), minval=-1., maxval=1.)
     for i_iter in tqdm(range(args.n_iters)):
-        pass
+        rng, _rng = split(rng)
+        fitness, img = calc_fitness(split(_rng, bs), population)
+        idx = jnp.argsort(fitness, descending=True)[:bs//2]
+        elite = population[idx[0]]
 
-    print(z_text.shape)
+        rng, _rng = split(rng)
+        population = population[idx[jax.random.randint(_rng, (bs,), minval=0, maxval=bs//2)]]
 
-    strategy = SimpleGA(popsize=args.bs, num_dims=args.n_colors*args.n_colors)
-    es_params = strategy.default_params
-    state = strategy.initialize(rng, es_params)
+        rng, _rng = split(rng)
+        population = mutate(split(_rng, bs), population)
 
-    def rollout_core(rng, env_params):
+        population = population.at[0].set(elite)
+        
+        if i_iter % 10 == 0:
+            print(f'mean fitness: {fitness.mean()}, max fitness: {fitness.max()}')
+        if i_iter % 100 == 0:
+            fitness, img = calc_fitness(split(_rng, bs), population)
+            # img = rearrange(img, '(B1 B2) H W C -> (B1 H) (B2 W) C', B1=4)
+            # plt.imshow(img)
+
+            plt.figure(figsize=(20, 10))
+            for i in range(bs):
+                plt.subplot(4, 8, i+1)
+                plt.imshow(img[i])
+                plt.axis('off')
+                plt.title(f'{fitness[i]:.4f}')
+            plt.tight_layout()
+            plt.savefig(f'./temp/imgs_{i_iter}.png')
+            plt.close()
+
+
+def main_bug(args):
+    rng = jax.random.PRNGKey(args.seed)
+
+    plife = ParticleLife(args.n_particles, args.n_colors, n_dims=args.n_dims, dt=args.dt,
+                         half_life=args.half_life, rmax=args.rmax)
+    def get_final_state(rng, env_params):
         state = plife.get_random_init_state(rng)
-
         def step(state, _):
             state = plife.forward_step(state, env_params)
-            return state, None
-        state, _ = jax.lax.scan(step, state, length=args.rollout_steps)
+            return state, 1.
+        state, _ = jax.lax.scan(step, state, length=args.rollout_steps, unroll=4)
 
-        render_fn = partial(plife.render_state_heavy, img_size=256, radius=0.5, sharpness=10.,
-                            color_palette=color_palette)
-        img = render_fn(state)
-        return img, state
+        return state
+    # try unroll parameter
+    # try fori loop
+    # 
+    
+    bs = 32
+    rng, _rng = split(rng)
+    env_params = jax.vmap(plife.get_random_env_params)(split(_rng, bs))
+    print(jax.tree.map(lambda x: x.shape, env_params))
+    rng, _rng = split(rng)
 
-    env_params_default = plife.get_random_env_params(rng)
-    def calc_fitness(rng, x):
-        x = rearrange(x, '(K K2) -> K K2', K=args.n_colors)
-        env_params = copy.copy(env_params_default)
-        env_params['alphas'] = x
+    fn = jax.jit(jax.vmap(get_final_state))
 
-        img, state = rollout_core(rng, env_params)
+    for i in tqdm(range(1000)):
+        # fn = jax.jit(partial(jax.vmap(get_final_state)))
+        # rng, _rng = split(rng)
+        fn(split(_rng, bs), env_params)
 
-        img = img[:224, :224]  # TODO augmentations
+def main_jaxmd(args):
+    from jax_md import partition
+    from jax_md import space
+    
+    box_size = 1.
+    cell_size = 0.1
+    displacement_fn, shift_fn = space.periodic(box_size)
+    neighbor_list_fn = partition.neighbor_list(displacement_fn, box_size, cell_size, capacity_multiplier=12.5)
 
-        z_img = clip_model.get_image_features(rearrange((img-img_mean)/img_std, 'H W C -> 1 C H W'))
-        z_img = z_img / jnp.linalg.norm(z_img, axis=-1, keepdims=True)
+    rng = jax.random.PRNGKey(0)
+    R = jax.random.uniform(rng, (1000, 2), minval=0., maxval=1.)
+    neighbors = neighbor_list_fn.allocate(R) # Create a new neighbor list.
+    print(neighbors.idx.shape)
 
-        fitness = (z_text @ z_img.T).mean()
-        return fitness
+    rng, _rng = split(rng)
+    R = jax.random.uniform(rng, (1000, 2), minval=0., maxval=1.)
+    neighbors = neighbors.update(R)
+    print(neighbors.idx.shape)
+    print(neighbors.idx)
 
-    calc_fitness(rng, jnp.zeros((args.n_colors*args.n_colors,)))
-
-    def do_iter(state, rng):
-        rng, _rng = split(rng)
-        x, state = strategy.ask(_rng, state, es_params)
-        fitness = jax.vmap(calc_fitness)(split(rng, x.shape[0]), x)
-        state = strategy.tell(x, fitness, state, es_params)
-        return state, fitness
+    print('here')
+    for i in range(100):
+        Rb = R[neighbors.idx[:, i]]
+        d = jnp.linalg.norm(R-Rb, axis=-1)
+        print(d.mean())
 
 
-    n_iters = 1000000
-    n_iters_update = 100
-    pbar = tqdm(total=n_iters)
-    for i in range(n_iters//n_iters_update):
-        rng, _rng = split(rng)
-        state, fitness = jax.lax.scan(do_iter, state, split(_rng, n_iters_update))
-        pbar.update(n_iters_update)
 
-        if i%100==0:
-            print(fitness.mean(), fitness.max())
 
-    assert False
 
 
 if __name__ == '__main__':
-    main(parse_args())
+    main_jaxmd(parse_args())
 
 
 
