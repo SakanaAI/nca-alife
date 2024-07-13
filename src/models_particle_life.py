@@ -129,6 +129,38 @@ class ParticleLife():
         color = color_palette[pcol]
         img, _ = jax.lax.scan(render_circle, img, (x, y, radius, color))
         return img
+
+
+
+####### testing out Jax-MD:
+# def main_jaxmd(args):
+#     from jax_md import partition
+#     from jax_md import space
+    
+#     box_size = 1.
+#     cell_size = 0.1
+#     displacement_fn, shift_fn = space.periodic(box_size)
+#     neighbor_list_fn = partition.neighbor_list(displacement_fn, box_size, cell_size, capacity_multiplier=12.5)
+
+#     rng = jax.random.PRNGKey(0)
+#     R = jax.random.uniform(rng, (1000, 2), minval=0., maxval=1.)
+#     neighbors = neighbor_list_fn.allocate(R) # Create a new neighbor list.
+#     print(neighbors.idx.shape)
+
+#     rng, _rng = split(rng)
+#     R = jax.random.uniform(rng, (1000, 2), minval=0., maxval=1.)
+#     neighbors = neighbors.update(R)
+#     print(neighbors.idx.shape)
+#     print(neighbors.idx)
+
+#     print('here')
+#     for i in range(100):
+#         Rb = R[neighbors.idx[:, i]]
+#         d = jnp.linalg.norm(R-Rb, axis=-1)
+#         print(d.mean())
+
+
+
     
 if __name__=='__main__':
     import numpy as np
