@@ -31,8 +31,8 @@ from tqdm.auto import tqdm
 from models_particle_life import ParticleLife
 from clip_jax import MyFlaxCLIP
 
-# import os
-# os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from transformers import AutoProcessor, FlaxCLIPModel
 
@@ -65,9 +65,8 @@ group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # 
 group.add_argument("--coef_alignment", type=float, default=1.)
 # group.add_argument("--coef_novelty", type=float, default=0.)
 
-
 group = parser.add_argument_group("optimization")
-group.add_argument("--rollout_steps", type=int, default=1000)
+group.add_argument("--rollout_steps", type=int, default=3000)
 
 group.add_argument("--bs", type=int, default=8)
 group.add_argument("--lr", type=float, default=3e-4)
@@ -89,15 +88,17 @@ def parse_args(*args, **kwargs):
 def main(args):
     rng = jax.random.PRNGKey(args.seed)
 
-    plife = ParticleLife(args.n_particles, args.n_colors, n_dims=args.n_dims, dt=args.dt,
-                         half_life=args.half_life, rmax=args.rmax)
+    plife = ParticleLife(args.n_particles, args.n_colors, n_dims=args.n_dims)
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text([args.prompt])
 
     # render_fn_clip = partial(plife.render_state_heavy, img_size=1024, radius=2., sharpness=10.)
     # render_fn_vid = partial(plife.render_state_heavy, img_size=256, radius=0.5, sharpness=10.)
     # render_fn_clip = partial(plife.render_state_heavy, img_size=224, radius=0.4375, sharpness=3.)
-    render_fn_clip = partial(plife.render_state_light, img_size=224, radius=0)
+    # render_fn_clip = partial(plife.render_state_light, img_size=224, radius=0)
+    render_fn_clip = partial(plife.render_state_heavy, img_size=224, radius=8e-3, sharpness=5e3)
+
+    render_fn_clip = jax.jit(render_fn_clip)
 
     def rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=False):
         state = plife.get_random_init_state(rng)
@@ -107,70 +108,84 @@ def main(args):
         state, statevid = jax.lax.scan(step, state, length=rollout_steps)
         return state, statevid
 
-    rng, _rng = split(rng)
-    env_params_default = plife.get_random_env_params(_rng)
     def mutate(rng, x):
+        x = {k: v for k, v in x.items()}
+        alpha = x['alpha']
         rng, _rng = split(rng)
-        mask = (jax.random.uniform(_rng, x.shape) < 0.15).astype(x.dtype)
-        noise = jax.random.uniform(rng, x.shape, minval=-1., maxval=1.)
-        return (1.-mask)*x + mask*noise
+        mask = (jax.random.uniform(_rng, alpha.shape) < 0.1).astype(jnp.float32)
+        noise = jax.random.uniform(rng, alpha.shape, minval=-1., maxval=1.)
+        x['alpha'] = (1.-mask)*alpha + mask*noise
+        return x
         
     def calc_fitness(rng, x):
-        env_params = {k: v for k, v in env_params_default.items()}
-        env_params['alphas'] = rearrange(x, '(K K2) -> K K2', K=args.n_colors)
+        env_params = x
         state, _ = rollout_plife(rng, env_params, return_statevid=False)
-        img = render_fn_clip(state)
+        img = render_fn_clip(state, env_params)
         z_img = clip_model.embed_img(img)
         return (z_text @ z_img.T).mean(), img
 
-    mutate = jax.jit(jax.vmap(mutate))
-    calc_fitness = jax.jit(jax.vmap(calc_fitness))
+    def gen_random_individual(rng):
+        return plife.get_default_env_params()
 
     rng, _rng = split(rng)
-    population = jax.random.uniform(_rng, (args.bs, args.n_colors*args.n_colors), minval=-1., maxval=1.)
+    population = jax.vmap(gen_random_individual)(split(_rng, args.bs))
 
     def do_iter(population, rng):
         rng, _rng = split(rng)
-        fitness, img = calc_fitness(split(_rng, args.bs), population)
+        fitness, img = jax.vmap(calc_fitness)(split(_rng, args.bs), population)
         idx = jnp.argsort(fitness, descending=True)
-        elite = population[idx[0]]
+        elite = jax.tree.map(lambda x: x[idx[0]], population)
 
         rng, _rng = split(rng)
-        next_population = population[idx[jax.random.randint(_rng, (args.bs,), minval=0, maxval=args.bs//2)]]
+        parent_idx = idx[jax.random.randint(_rng, (args.bs,), minval=0, maxval=args.bs//2)]
+        next_population = jax.tree.map(lambda x: x[parent_idx], population)
+
         rng, _rng = split(rng)
-        next_population = mutate(split(_rng, args.bs), next_population)
-        next_population = next_population.at[0].set(elite)
+        next_population = jax.vmap(mutate)(split(_rng, args.bs), next_population)
+
+        next_population = jax.tree.map(lambda x, y: x.at[0].set(y), next_population, elite)
         return next_population, dict(population=population, fitness=fitness, img=img)
+    do_iter = jax.jit(do_iter)
 
-    # population, metrics = jax.lax.scan(do_iter, population, split(_rng, 500))
+    # def save_ckpt(save_dir, i_iter, population, metrics):
+        # util.save_ckpt(save_dir, i_iter, dict(population=population, metrics=metrics))
 
-    for i_iter in tqdm(range(args.n_iters)):
+    fitnesses = []
+    pbar = tqdm(range(args.n_iters))
+    for i_iter in pbar:
         rng, _rng = split(rng)
-        population, metrics = jax.lax.scan(do_iter, population, split(_rng, 1))
+        population, metrics = do_iter(population, _rng)
+        # population, metrics = jax.lax.scan(do_iter, population, split(_rng, 1))
 
-    #     print(metrics['fitness'].mean(), metrics['fitness'].max())
-        # if i_iter % 10 == 0:
-        #     print(f'mean fitness: {fitness.mean()}, max fitness: {fitness.max()}')
-        # if i_iter % 100 == 0:
-        #     fitness, img = calc_fitness(split(_rng, args.bs), population)
-        #     # img = rearrange(img, '(B1 B2) H W C -> (B1 H) (B2 W) C', B1=4)
-        #     # plt.imshow(img)
+        fitnesses.append(metrics['fitness'])
+        pbar.set_postfix(mean_fitness=metrics['fitness'].mean(), max_fitness=metrics['fitness'].max())
 
-        #     plt.figure(figsize=(20, 10))
-        #     for i in range(bs):
-        #         plt.subplot(4, 8, i+1)
-        #         plt.imshow(img[i])
-        #         plt.axis('off')
-        #         plt.title(f'{fitness[i]:.4f}')
-        #     plt.tight_layout()
-        #     plt.savefig(f'./temp/imgs_{i_iter}.png')
-        #     plt.close()
+        if args.save_dir is not None and (i_iter%(args.n_iters//10)==0 or i==args.n_iters-1):
+            util.save_pkl(args.save_dir, 'fitnesses', jax.tree.map(lambda x: np.array(x), fitnesses))
+            util.save_pkl(args.save_dir, 'population', jax.tree.map(lambda x: np.array(x), population))
+
+            imgs = metrics['img'][:8]
+            plt.figure(figsize=(40, 20))
+            for i, img in enumerate(imgs):
+                fitness = metrics['fitness'][i]
+                plt.subplot(2, 4, i+1)
+                plt.imshow(img)
+                plt.axis('off')
+                plt.title(f"{fitness:.4f}")
+            plt.suptitle(f"Prompt: {args.prompt},  Iteration: {i_iter:06d}")
+            plt.tight_layout()
+            plt.savefig(f"{args.save_dir}/imgs_{i_iter:06d}.png")
+            plt.close()
+
+            elite = jax.tree.map(lambda x: x[0], population)
+            rng, _rng = split(rng)
+            state, statevid = rollout_plife(rng, elite, rollout_steps=args.rollout_steps * 3, return_statevid=True)
+            vid = jax.vmap(render_fn_clip, in_axes=(0, None))(statevid, elite)
+            vid = np.array((vid*255).astype(jnp.uint8))
+            imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=100, codec='libx264')
+
+
 
 if __name__ == '__main__':
-    # main(parse_args())
+    main(parse_args())
 
-    A = np.zeros(32, 2)
-
-    for i in range(100):
-        a = np.random.choice(A)
-        a = a + 1e-2*np.random.randn_like(a)
