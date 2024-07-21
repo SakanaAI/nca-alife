@@ -5,15 +5,17 @@ from jax.random import split
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from einops import repeat
+from einops import repeat, rearrange
 
 from functools import partial
 
 class ParticleLife():
-    def __init__(self, n_particles, n_colors, n_dims=2):
+    def __init__(self, n_particles, n_colors, n_dims=2, x_dist_bins=7):
         self.n_particles = n_particles
         self.n_colors = n_colors
         self.n_dims = n_dims
+        assert n_dims==2, 'only 2d supported for now'
+        self.x_dist_bins = x_dist_bins
         # NOTE: the particle space is [0, 1]
     
     def get_default_env_params(self):
@@ -21,25 +23,25 @@ class ParticleLife():
             beta=jnp.full((self.n_colors, ), 0.3),
             alpha=jnp.zeros((self.n_colors, self.n_colors)),
             mass=jnp.full((self.n_colors, ), 0.1),
-            dt=jnp.array(0.01),
+            dt=jnp.array(0.005),
             half_life=jnp.full((self.n_colors, ), 0.04),
             rmax=jnp.full((self.n_colors, ), 0.1),
+            c_dist=jnp.zeros((self.n_colors, )),
+            x_dist=jnp.zeros((self.n_colors, self.x_dist_bins, self.x_dist_bins)),
         )
-    # def get_random_env_params(self, rng, distribution='uniform'):
-    #     beta = jnp.array(0.3)
-    #     if distribution=='uniform':
-    #         alphas = jax.random.uniform(rng, (self.n_colors, self.n_colors), minval=-1., maxval=1.)
-    #     elif distribution=='normal':
-    #         alphas = jax.random.normal(rng, (self.n_colors, self.n_colors))
-    #     masses = jnp.ones((self.n_colors, ))/10.
-    #     return dict(alphas=alphas, beta=beta, masses=masses)
-    
-    def get_random_init_state(self, rng, distribution='uniform'):
-        rng, _rng = split(rng)
-        c = jax.random.randint(_rng, (self.n_particles,), 0, self.n_colors)
-        rng, _rng = split(rng)
-        if distribution=='uniform':
-            x = jax.random.uniform(_rng, (self.n_particles, self.n_dims), minval=0, maxval=1)
+
+    def get_init_state(self, rng, env_params):
+        _rng1, _rng2, _rng3 = split(rng, 3)
+        c_dist = jax.nn.softmax(env_params['c_dist'])
+        c = jax.random.choice(_rng1, self.n_colors, shape=(self.n_particles, ), replace=True, p=c_dist)
+
+        x = jax.random.uniform(_rng2, (self.n_particles, self.n_dims), minval=0., maxval=1./self.x_dist_bins)
+        x_dist = rearrange(env_params['x_dist'][c], "N H W -> N (H W)")
+        x_bin = jax.random.categorical(_rng3, x_dist, axis=-1)
+        xbin, ybin = jnp.unravel_index(x_bin, (self.x_dist_bins, self.x_dist_bins))
+        xbin = jnp.stack([xbin, ybin], axis=-1)
+        x = x + xbin * (1./self.x_dist_bins)
+
         v = jnp.zeros((self.n_particles, self.n_dims))
         return dict(c=c, x=x, v=v)
     
@@ -107,30 +109,34 @@ class ParticleLife():
         img = img.at[x, y, :].set(color)
         return img
         
-    def render_state_heavy(self, state, env_params, img_size=256, radius=4e-3, sharpness=1.5e3,
+    def render_state_heavy(self, state, env_params, img_size=256, radius=5e-3, sharpness=20.,
                            color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='k'):
         color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
         background_color = jnp.array(mcolors.to_rgb(background_color)).astype(jnp.float32)
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
-        
-        pos, vel, pcol = state['x'], state['v'], state['c']
+
+        x, v, c = state['x'], state['v'], state['c']
+        mass = env_params['mass'][c]
+        i = jnp.argsort(mass)[::-1]
+
+        x, v, c, mass = x[i], v[i], c[i], mass[i]
+        color = color_palette[c]
+
         xgrid = ygrid = jnp.linspace(0, 1, img_size)
         xgrid, ygrid = jnp.meshgrid(xgrid, ygrid, indexing='ij')
-    
+
         def render_circle(img, circle_data):
             x, y, radius, color = circle_data
             d2 = (x-xgrid)**2 + (y-ygrid)**2
             d = jnp.sqrt(d2)
             # d2 = (d2<radius**2).astype(jnp.float32)[:, :, None]
             # img = d2*color + (1.-d2)*img
-            coeff = 1.- (1./(1.+jnp.exp(-sharpness*(d-radius))))
+            coeff = 1.- (1./(1.+jnp.exp(-sharpness/radius*(d-radius))))
             img = coeff[:, :, None]*color + (1-coeff[:, :, None])*img
             return img, None
     
-        x, y = pos.T
-        radius = jnp.sqrt(env_params['mass'][pcol]) * radius
-        color = color_palette[pcol]
-        img, _ = jax.lax.scan(render_circle, img, (x, y, radius, color))
+        radius = jnp.sqrt(mass) * radius
+        img, _ = jax.lax.scan(render_circle, img, (*x.T, radius, color))
         return img
 
 
@@ -247,7 +253,7 @@ if __name__=='__main__f':
     plt.imsave('./temp/plife.png', imgs)
 
 
-if __name__=='__main__':
+if __name__=='__main__f':
     kernel_designs = dict(
         phases=jnp.array([[0, -1., 0], [-1, 0, 0], [0.5, 0.5, 1.]]),
         gliders=jnp.array([[.5, .25, -.2], [1., .5, .1], [-0.5, 0.5, .25]]),
@@ -289,3 +295,24 @@ if __name__=='__main__':
         imageio.mimwrite(f'./temp/vid_{name}.mp4', vid, fps=100, codec='libx264')
 
 
+
+if __name__=='__main__':
+    plife = ParticleLife(5000, 3, x_dist_bins=7)
+    rng = jax.random.PRNGKey(0)
+    env_params = plife.get_default_env_params()
+
+    env_params['c_dist'] = 0*jax.random.normal(rng, env_params['c_dist'].shape)
+    env_params['x_dist'] = 0*jax.random.normal(rng, env_params['x_dist'].shape)
+    # env_params['mass'] = jnp.array([0.1, 1.0, 10.])
+    env_params['mass'] = jnp.array([1.0, .1, .1])
+
+    print('ep', jax.tree.map(lambda x: x.shape, env_params))
+
+    state = plife.get_adv_init_state(rng, env_params)
+    print('state', jax.tree.map(lambda x: x.shape, state))
+
+    img = plife.render_state_heavy(state, env_params, img_size=1024, radius=5e-3, sharpness=5e3)
+
+    plt.imsave('./temp3/init.png', img)
+
+    
