@@ -83,7 +83,7 @@ def main(args):
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text([args.prompt])
     render_fn = partial(plife.render_state_heavy, img_size=224, radius=args.render_radius, sharpness=args.render_sharpness)
-    render_fn_vid = partial(plife.render_state_heavy, img_size=640, radius=args.render_radius, sharpness=args.render_sharpness)
+    render_fn_vid = partial(plife.render_state_heavy, img_size=512, radius=args.render_radius, sharpness=args.render_sharpness)
     render_fn_large = partial(plife.render_state_heavy, img_size=1024, radius=args.render_radius, sharpness=args.render_sharpness)
 
     def rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=False):
@@ -170,27 +170,31 @@ def main(args):
     carry = init_iter(rng)
     for i_iter in tqdm(range(args.n_iters)):
         rng, _rng = split(rng)
-        carry, datai = do_iter(_rng, i_iter, carry)
-        datai = datai[1]
+        carry, (_, metrics) = do_iter(_rng, i_iter, carry)
 
-        data_dense.append(datai)
-        if i_iter % (args.n_iters//16)==0:
-            datai = copy.copy(datai)
-            datai['img_init_clip'] = render_fn(datai['state_init'], datai['env_params'])
-            datai['img_final_clip'] = render_fn(datai['state_final'], datai['env_params'])
-            datai['img_init'] = render_fn_large(datai['state_init'], datai['env_params'])
-            datai['img_final'] = render_fn_large(datai['state_final'], datai['env_params'])
-            data_sparse.append(datai)
+        data_dense.append(metrics)
+        if i_iter % (args.n_iters//32)==0:
+            metrics = copy.copy(metrics)
+            metrics['img_init_clip'] = jax.vmap(render_fn)(metrics['state_init'], metrics['env_params']) # vmap over seeds
+            metrics['img_final_clip'] = jax.vmap(render_fn)(metrics['state_final'], metrics['env_params'])
+            metrics['img_init'] = jax.vmap(render_fn_large)(metrics['state_init'], metrics['env_params'])
+            metrics['img_final'] = jax.vmap(render_fn_large)(metrics['state_final'], metrics['env_params'])
+            data_sparse.append(metrics)
     
     if args.save_dir is not None:
         util.save_pkl(args.save_dir, "data_dense", data_dense)
         util.save_pkl(args.save_dir, "data_sparse", data_sparse)
 
         # render video
-        _, _, statevid = rollout_plife(rng, datai['env_params'], rollout_steps=args.rollout_steps, return_statevid=True)
-        vid = jax.vmap(render_fn_vid, in_axes=(0, None))(statevid, datai['env_params'])
+        env_params = carry[0]
+        _, _, statevid = rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=True)
+        # print('statevid ', jax.tree.map(lambda x: x.shape, statevid))
+        # print('env_params ', jax.tree.map(lambda x: x.shape, env_params))
+
+        vid = jax.vmap(render_fn_vid, in_axes=(0, None))(statevid, env_params)
         vid = np.array((vid*255).astype(jnp.uint8))
-        imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=int(1./env_params['dt']), codec='libx264')
+        # print(vid.shape, vid.size, vid.dtype, vid.min(), vid.max())
+        imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=100, codec='libx264')
         
 
 

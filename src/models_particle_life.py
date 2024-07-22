@@ -23,7 +23,7 @@ class ParticleLife():
             beta=jnp.full((self.n_colors, ), 0.3),
             alpha=jnp.zeros((self.n_colors, self.n_colors)),
             mass=jnp.full((self.n_colors, ), 0.1),
-            dt=jnp.array(0.005),
+            dt=jnp.array(0.002),
             half_life=jnp.full((self.n_colors, ), 0.04),
             rmax=jnp.full((self.n_colors, ), 0.1),
             c_dist=jnp.zeros((self.n_colors, )),
