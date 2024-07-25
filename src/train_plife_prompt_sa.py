@@ -84,7 +84,7 @@ def main(args):
     z_text = clip_model.embed_text([args.prompt])
     render_fn = partial(plife.render_state_heavy, img_size=224, radius=args.render_radius, sharpness=args.render_sharpness)
     render_fn_vid = partial(plife.render_state_heavy, img_size=512, radius=args.render_radius, sharpness=args.render_sharpness)
-    render_fn_large = partial(plife.render_state_heavy, img_size=1024, radius=args.render_radius, sharpness=args.render_sharpness)
+    render_fn_large = partial(plife.render_state_heavy, img_size=512, radius=args.render_radius, sharpness=args.render_sharpness)
 
     def rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=False):
         state_init = plife.get_init_state(rng, env_params)
@@ -184,6 +184,14 @@ def main(args):
     if args.save_dir is not None:
         util.save_pkl(args.save_dir, "data_dense", data_dense)
         util.save_pkl(args.save_dir, "data_sparse", data_sparse)
+
+        _, metrics = carry
+        metrics = copy.copy(metrics)
+        metrics['img_init_clip'] = jax.vmap(render_fn)(metrics['state_init'], metrics['env_params']) # vmap over seeds
+        metrics['img_final_clip'] = jax.vmap(render_fn)(metrics['state_final'], metrics['env_params'])
+        metrics['img_init'] = jax.vmap(render_fn_large)(metrics['state_init'], metrics['env_params'])
+        metrics['img_final'] = jax.vmap(render_fn_large)(metrics['state_final'], metrics['env_params'])
+        util.save_pkl(args.save_dir, "final_metrics", metrics)
 
         # render video
         env_params = carry[0]
