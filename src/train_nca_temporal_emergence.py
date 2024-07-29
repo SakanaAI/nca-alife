@@ -6,6 +6,7 @@ from einops import rearrange, reduce, repeat
 import torch
 from torch import nn
 from torchvision import transforms
+from torch.nn.functional import cross_entropy
 
 from PIL import Image
 from transformers import AutoProcessor, CLIPModel
@@ -16,9 +17,11 @@ import argparse
 from collections import defaultdict
 
 from models_torch import NCA, sample_init_state
+from clip_torch import MyTorchCLIP
+from MSOEmultiscale import MyOpticalFlowNet
 
 import imageio
-
+import time
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -41,20 +44,18 @@ group.add_argument("--dt", type=float, default=0.01)
 group.add_argument("--dropout", type=float, default=0.5)
 
 group = parser.add_argument_group("data")
-group.add_argument("--target_img_path", type=str, default=None)
-# group.add_argument("--prompt", type=str, default="a red apple;a green apple;a blue apple;a yellow apple")
-# group.add_argument("--prompt", type=str, default="a red apple;a green tree;a fat cat;the yellow sun")
-group.add_argument("--prompt", type=str, default="a green tree")
-
-group.add_argument("--augs", type=str, default='crop+pers')
-group.add_argument("--aug_crop_scale", type=float, default=1.)
-
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
 
+group.add_argument("--prompts", type=str, default="atom,leaf,cell,human;compound,tree,animal,civilization")
+group.add_argument("--spatial_scales", type=str, default="0.1;1.0")
+group.add_argument("--optical_flow_mag", type=float, default=1.)
+
 group.add_argument("--coef_alignment", type=float, default=1.)
-group.add_argument("--coef_softmax", type=float, default=0.)
-group.add_argument("--coef_novelty", type=float, default=0.)
-group.add_argument("--coef_temporal", type=float, default=0.)
+group.add_argument("--coef_optical_flow", type=float, default=0.)
+group.add_argument("--coef_temporal_softmax", type=float, default=0.)
+group.add_argument("--coef_spatial_softmax", type=float, default=0.)
+group.add_argument("--coef_temporal_novelty", type=float, default=0.)
+group.add_argument("--coef_spatial_novelty", type=float, default=0.)
 
 group = parser.add_argument_group("optimization")
 group.add_argument("--rollout_steps", type=int, default=64)
@@ -86,129 +87,100 @@ def main(args):
     
     device = torch.device(args.device)
     dtype = getattr(torch, args.dtype)
-
-    trans_aug = []
-    if 'crop' in args.augs:
-        # trans_aug.append( transforms.RandomResizedCrop(224, scale=(0.4, 1.)), ratio=(3./4., 4./3.))
-        trans_aug.append(transforms.RandomResizedCrop(224, scale=(args.aug_crop_scale, args.aug_crop_scale), ratio=(3./4., 4./3.)))
-        # TODO: add a rotation augmentation
-    if 'pers' in args.augs:
-        trans_aug.append( transforms.RandomPerspective(distortion_scale=0.5, p=1., fill=0.), )
-    # if 'jitter' in args.augs:
-        # trans_aug.append(transforms.ColorJitter(brightness=.5, contrast=0.5, saturation=0.5, hue=0.1))
-    trans_aug = transforms.Compose(trans_aug)
-    def augment_img(x):
-        return trans_aug(x)
+    
 
     def init_pool():
-        states = sample_init_state(args.img_size, args.img_size, args.d_state, args.pool_size, args.init_state, device=device, dtype=dtype)
-        times = torch.randint(0, args.rollout_steps, (args.pool_size, ), device=device)
-        return dict(states=states, times=times)
+        state = sample_init_state(args.img_size, args.img_size, args.d_state, args.pool_size, args.init_state, device=device, dtype=dtype)
+        time = torch.randint(0, args.rollout_steps, (args.pool_size, ), device=device)
+        return dict(state=state, time=time)
     pool = init_pool()
 
-    # ------------------------ Objective ------------------------
-    if args.target_img_path is not None:
-        assert False
-        target_img = Image.open(args.target_img_path).convert('RGB').resize((args.img_size, args.img_size))
-        target_img = torch.from_numpy(np.array(target_img)).to(device, dtype)/255.
-        target_img = rearrange(target_img, "H W D -> D H W")
+    flow_net = MyOpticalFlowNet(device=device, dtype=dtype)
+    clip_model = MyTorchCLIP(args.clip_model, device=device, dtype=dtype)
+    # prompts = args.prompt.split(';')
+    # z_text = clip_model.embed_text(prompts) # (P, D)
 
-        def obj_loss_fn(x):
-            return ((x - target_img)**2).mean()
-    else:
-        clip_model = CLIPModel.from_pretrained(f"openai/{args.clip_model}")
-        processor = AutoProcessor.from_pretrained(f"openai/{args.clip_model}")
-        clip_model = clip_model.to(device, dtype)
-        for p in clip_model.parameters():
-            p.requires_grad = False
+    spatial_scales = [float(s) for s in args.spatial_scales.split(';')]
+    prompts = [p.split(',') for p in args.prompts.split(';')]
+    z_text_all = rearrange([clip_model.embed_text(p.split(',')) for p in args.prompts.split(';')], "S T D -> S T D")
+    n_scales, n_times, _ = z_text_all.shape
+    assert args.rollout_steps%n_times == 0
+    seg_len = args.rollout_steps//n_times
 
-        prompts = args.prompt.split(';')
-        inputs = processor(text=prompts, return_tensors="pt", padding=True)
-        inputs = {k: v.to(args.device) for k, v in inputs.items()}
-        
-        with torch.no_grad():
-            z_text = clip_model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
-            z_text = z_text/z_text.norm(dim=-1, keepdim=True)
-
-        img_mean = torch.tensor(processor.image_processor.image_mean, device=device, dtype=dtype)
-        img_std = torch.tensor(processor.image_processor.image_std, device=device, dtype=dtype)
-        print("img_mean: ", img_mean.tolist())
-        print("img_std: ", img_std.tolist())
-
-        assert args.rollout_steps%len(prompts)==0
-        n_segs, seg_len = len(prompts), args.rollout_steps//len(prompts)
-        def obj_loss_fn(img, time, vid):
-            label = time//seg_len
-            x = (img-img_mean[:, None, None])/img_std[:, None, None]
-            z_img = clip_model.get_image_features(x)
-            z_img = z_img/z_img.norm(dim=-1, keepdim=True)
-
-            # z_img: (Batch, D), z_text: (Prompts, D), label: (Batch, )
-
-            loss_alignment = -(z_img*z_text[label]).sum(dim=-1).mean()
-            
-            logits = (z_img @ z_text.T) * clip_model.logit_scale.exp()  # Batch, Prompts
-            loss_softmax = torch.nn.functional.cross_entropy(logits, label, reduction='none').mean()
-
-            # z_img_rand = z_img[torch.randperm(args.bs)]
-            # (z_img*z_img_rand).sum(dim=-1)
-            loss_novelty = (z_img@z_img.T).mean()
-
-            f_nxt, f_now = vid[:, 1:, :, :, :], vid[:, :-1, :, :, :]
-            loss_temporal = -((f_nxt-f_now)**2).mean()
-
-            loss = loss_alignment * args.coef_alignment + loss_softmax * args.coef_softmax
-            loss = loss + loss_novelty * args.coef_novelty + loss_temporal * args.coef_temporal
-            return dict(loss=loss, loss_alignment=loss_alignment, loss_softmax=loss_softmax,
-                        loss_novelty=loss_novelty, loss_temporal=loss_temporal)
+    augment_img = transforms.Compose([
+        # transforms.RandomRotation()
+        transforms.RandomPerspective(distortion_scale=0.5, p=1., fill=0.),
+    ])
+    crop_img_scales = [transforms.RandomResizedCrop(224, scale=(s, s), ratio=(3./4., 4./3.)) for s in spatial_scales]
 
     # ------------------------ Model ------------------------
-    # nca = NCA().to(device, dtype)
     nca = NCA(d_state=args.d_state, perception=args.perception, kernel_size=args.kernel_size, padding_mode=args.padding_mode,
                  d_embds=[48, 128], cell_norm=False, state_unit_norm=True, dt=args.dt, dropout=args.dropout).to(device, dtype)
-    
     # nca = torch.jit.script(nca)
     opt = torch.optim.AdamW(nca.parameters(), lr=args.lr, weight_decay=0.)
     num_params = sum(p.numel() for p in nca.parameters())
     print(f"# of parameters: {num_params}")
     print(f"Image size: {args.img_size}x{args.img_size}x3={args.img_size*args.img_size*3}")
     print(f"Image Compression: {num_params/(args.img_size*args.img_size*3)}")
+    print(f"Video Compression: {num_params/(args.rollout_steps*args.img_size*args.img_size*3)}")
 
     time2grad = {}
+    def save_grad(t):
+        def hook(grad):
+            time2grad[t] = grad
+        return hook
 
-    def forward_chunk(state, time):
-        def save_grad(t):
-            def hook(grad):
-                time2grad[t] = grad
-            return hook
-
+    def nca_unroll_batch():
         vid = []
+        idx = torch.randperm(args.pool_size)[:args.bs]
+        state, time = pool['state'][idx], pool['time'][idx]
         for t in range(args.bptt_steps):
             state, obs = nca.forward_step(state)
-            obs_time = time
             vid.append(obs)
-            
-            time += 1
-            init_states = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state,
-                                            state_unit_norm=True, device=device, dtype=dtype)
-            state[time>=args.rollout_steps] = init_states[time>=args.rollout_steps]
-            time[time>=args.rollout_steps] = 0
-            
+            reset_mask = ((time+t)%args.rollout_steps) == 0
+            init_state = sample_init_state(args.img_size, args.img_size, args.d_state, args.bs, args.init_state,
+                                           state_unit_norm=True, device=device, dtype=dtype)
+            state[reset_mask] = init_state[reset_mask]
             if t%(args.bptt_steps//8)==0:
                 state.register_hook(save_grad(t))
-                
-        vid = torch.stack(vid, dim=-4)
-        return state, time, obs, obs_time, vid
-        
-    def forward_batch():
-        idx = torch.randperm(args.pool_size)[:args.bs]
-        states, times = pool['states'][idx], pool['times'][idx]
-        states, times, obs, obs_times, vid = forward_chunk(states, times)
-        pool['states'][idx], pool['times'][idx] = states.detach(), times
+        pool['state'][idx], pool['time'][idx] = state.detach(), ((time+args.bptt_steps)%args.rollout_steps)
+        vid = rearrange(vid, "T B D H W -> B T D H W").sigmoid()
+        time_end = (pool['time'][idx] - 1)%args.rollout_steps # final timestep for the observation video
+        return vid, time_end
 
-        obs = rearrange(torch.sigmoid(obs), 'B D H W -> B D H W')
-        vid = rearrange(torch.sigmoid(vid), 'B T D H W -> B T D H W')
-        return obs, obs_times, vid
+    def loss_fn():
+        vid, time_end = nca_unroll_batch()
+        img = vid[:, -1]
+        img = rearrange([augment_img(crop_img(img)) for crop_img in crop_img_scales], "S B D H W -> (S B) D H W")
+        z_img = rearrange(clip_model.embed_img(img), "(S B) D -> B S D", S=n_scales)
+        # z_img: B S D     # z_text_all: St Tt D
+        label = time_end//seg_len # (B, )
+
+        loss_dict = {}
+        # ------------------------ Loss Alignment ------------------------
+        loss_dict['loss_alignment'] = -rearrange(z_img, "B S D -> B S 1 D") @ rearrange(z_text_all[:, label, :], "St B D -> B St D 1")
+        # ------------------------ Loss Temporal Softmax ------------------------
+        logits = rearrange(z_img, "B S D -> B S 1 1 D") @ rearrange(z_text_all, "St Tt D -> St Tt D 1") # B S Tt 1 1
+        loss_dict['loss_temporal_softmax'] = cross_entropy(rearrange(logits, "B S Tt 1 1 -> (B S) Tt"), repeat(label, "B -> (B S)", S=n_scales), reduction='none')
+        # ------------------------ Loss Spatial Softmax ------------------------
+        logits = rearrange(z_img, "B S D -> B S 1 1 D") @ rearrange(z_text_all[:, label, :], "St B D -> B 1 St D 1") # B S St 1 1
+        label_scale = torch.arange(n_scales, device=device)
+        loss_dict['loss_spatial_softmax'] = cross_entropy(rearrange(logits, "B S St 1 1 -> (B S) St"), repeat(label_scale, "S -> (B S)", B=args.bs), reduction='none')
+        # ------------------------ Loss Temporal Novelty ------------------------
+        loss_dict['loss_temporal_novelty'] = rearrange(z_img, "B S D -> S B D") @ rearrange(z_img, "B S D -> S D B") # S B B
+        # ------------------------ Loss Spatial Novelty ------------------------
+        loss_dict['loss_spatial_novelty'] = rearrange(z_img, "B S D -> B S D") @ rearrange(z_img, "B S D -> B D S") # B S S
+        # ------------------------ Loss Optical Flow ------------------------
+        optical_flow = flow_net.get_optical_flow(vid[:, -2], vid[:, -1]) # B 2 H W
+        loss_dict['loss_optical_flow'] = (optical_flow.norm(dim=-3).mean(dim=(-1, -2))-args.optical_flow_mag).abs()
+
+        loss = 0.
+        for k in loss_dict:
+            loss_dict[k] = loss_dict[k].mean()
+            coef = getattr(args, k.replace('loss_', 'coef_'))
+            loss = loss + coef * loss_dict[k].mean()
+        loss_dict['loss'] = loss
+        return loss_dict
     
     @torch.no_grad
     def create_full_video(bs=1):
@@ -217,34 +189,23 @@ def main(args):
         for t in range(int(args.rollout_steps*1.5)):
             state, obs = nca.forward_step(state)
             vid.append(obs)
-        vid = rearrange(torch.sigmoid(torch.stack(vid)), 'T B D H W -> B T H W D')
+        vid = rearrange(vid, "T B D H W -> B T H W D").sigmoid()  # NOTE: B T H W D instead of B T D H W
         return vid
 
-    def loss_fn():
-        x, times, vid = forward_batch()
-        x = augment_img(x)
-        return obj_loss_fn(x, times, vid)
-
-    losses = defaultdict(list)
-    grad_norms = []
-    grad_vs_times = []
+    data = defaultdict(list)
     pbar = tqdm(range(args.n_iters))
     for i in pbar:
         opt.zero_grad()
 
-        loss = loss_fn()
-        loss['loss'].backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm)
+        loss_dict = loss_fn()
+        loss_dict['loss'].backward()
+        data['grad_norm'].append(torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm))
         opt.step()
 
-        [losses[k].append(v.detach()) for k, v in loss.items()]
-        
-        grad_norms.append(grad_norm.item())
-        grad_vs_times.append([time2grad[k].norm(dim=-3).mean().item() for k in sorted(list(time2grad.keys()))])
-
+        [data[k].append(v.detach()) for k, v in loss_dict.items()]
+        data['grad_bptt'].append([time2grad[k].norm(dim=-3).mean().item() for k in sorted(list(time2grad.keys()))])
         if i%100==0:
-            pbar.set_postfix(loss=loss['loss'].item())
-
+            pbar.set_postfix(loss=loss_dict['loss'].item())
         if args.save_dir is not None and (i%(args.n_iters//5)==0 or i==args.n_iters-1):
             vid = create_full_video(bs=1)[0] # T H W D
             vid = (vid*255).to(torch.uint8).cpu().numpy()
@@ -253,19 +214,14 @@ def main(args):
             imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
             imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
             
-            util.save_pkl(args.save_dir, 'losses', {k: torch.stack(v).cpu().numpy() for k, v in losses.items()})
-            util.save_pkl(args.save_dir, 'grad_norms', np.array(grad_norms))
-            util.save_pkl(args.save_dir, 'grad_vs_times', np.array(grad_vs_times))
+            util.save_pkl(args.save_dir, 'data', data)
             torch.save(nca.state_dict(), f"{args.save_dir}/nca.pt")
 
             plt.figure(figsize=(10, 5))
-            plt.subplot(211); plt.plot(torch.stack(losses['loss']).cpu().numpy())
+            plt.subplot(211); plt.plot(torch.stack(data['loss']).cpu().numpy())
             plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
             plt.savefig(f'{args.save_dir}/overview_{i:06d}.png')
             plt.close()
-    # print(grad_norm.item())
-
-
 
     
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
+from transformers import AutoProcessor, CLIPModel
+import torch
+
+from einops import rearrange
 
 class MyTorchCLIP():
     def __init__(self, clip_model, device=None, dtype=None):
-        from transformers import AutoProcessor, CLIPModel
         self.processor = AutoProcessor.from_pretrained(f"openai/{clip_model}")
         self.clip_model = CLIPModel.from_pretrained(f"openai/{clip_model}").to(device, dtype)
-        for p in clip_model.parameters():
+        for p in self.clip_model.parameters():
             p.requires_grad = False
 
         self.img_mean = torch.tensor(self.processor.image_processor.image_mean, device=device, dtype=dtype)
