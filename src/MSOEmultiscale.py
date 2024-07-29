@@ -200,5 +200,4 @@ class MyOpticalFlowNet():
         x1 = TF.rgb_to_grayscale(x1)
         x2 = TF.rgb_to_grayscale(x2)
         x = torch.stack([x1, x2], dim=-1)
-        print(x.shape)
         return self.model(x)

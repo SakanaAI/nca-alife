@@ -194,19 +194,21 @@ def main(args):
 
     data = defaultdict(list)
     pbar = tqdm(range(args.n_iters))
-    for i in pbar:
+    for i_iter in pbar:
         opt.zero_grad()
 
         loss_dict = loss_fn()
         loss_dict['loss'].backward()
-        data['grad_norm'].append(torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm))
+        grad_norm = torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm)
         opt.step()
 
-        [data[k].append(v.detach()) for k, v in loss_dict.items()]
-        data['grad_bptt'].append([time2grad[k].norm(dim=-3).mean().item() for k in sorted(list(time2grad.keys()))])
-        if i%100==0:
+        if i_iter%10:
+            [data[k].append(v.detach()) for k, v in loss_dict.items()]
+            data['grad_norm'].append(grad_norm)
+            data['grad_bptt'].append(torch.stack([time2grad[k].norm(dim=-3).mean() for k in sorted(list(time2grad.keys()))]))
             pbar.set_postfix(loss=loss_dict['loss'].item())
-        if args.save_dir is not None and (i%(args.n_iters//5)==0 or i==args.n_iters-1):
+
+        if args.save_dir is not None and (i_iter%(args.n_iters//5)==0 or i_iter==args.n_iters-1):
             vid = create_full_video(bs=1)[0] # T H W D
             vid = (vid*255).to(torch.uint8).cpu().numpy()
 
@@ -214,14 +216,15 @@ def main(args):
             imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
             imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
             
-            util.save_pkl(args.save_dir, 'data', data)
+            util.save_pkl(args.save_dir, 'data', {k: torch.stack(v).cpu().numpy() for k, v in data.items()})
             torch.save(nca.state_dict(), f"{args.save_dir}/nca.pt")
 
-            plt.figure(figsize=(10, 5))
-            plt.subplot(211); plt.plot(torch.stack(data['loss']).cpu().numpy())
-            plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
-            plt.savefig(f'{args.save_dir}/overview_{i:06d}.png')
-            plt.close()
+            # plt.figure(figsize=(10, 5))
+            # print(data['loss'])
+            # plt.subplot(211); plt.plot(torch.stack(data['loss']).cpu().numpy())
+            # plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
+            # plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
+            # plt.close()
 
     
 if __name__ == "__main__":
