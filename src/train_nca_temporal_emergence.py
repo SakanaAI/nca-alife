@@ -202,7 +202,7 @@ def main(args):
         grad_norm = torch.nn.utils.clip_grad_norm_(nca.parameters(), args.clip_grad_norm)
         opt.step()
 
-        if i_iter%10:
+        if i_iter%10== 0:
             [data[k].append(v.detach()) for k, v in loss_dict.items()]
             data['grad_norm'].append(grad_norm)
             data['grad_bptt'].append(torch.stack([time2grad[k].norm(dim=-3).mean() for k in sorted(list(time2grad.keys()))]))
@@ -219,12 +219,11 @@ def main(args):
             util.save_pkl(args.save_dir, 'data', {k: torch.stack(v).cpu().numpy() for k, v in data.items()})
             torch.save(nca.state_dict(), f"{args.save_dir}/nca.pt")
 
-            # plt.figure(figsize=(10, 5))
-            # print(data['loss'])
-            # plt.subplot(211); plt.plot(torch.stack(data['loss']).cpu().numpy())
-            # plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
-            # plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
-            # plt.close()
+            plt.figure(figsize=(10, 5))
+            plt.subplot(211); plt.plot(torch.stack(data['loss']).cpu().numpy())
+            plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
+            plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
+            plt.close()
 
     
 if __name__ == "__main__":
