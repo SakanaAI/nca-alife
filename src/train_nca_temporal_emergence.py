@@ -123,6 +123,8 @@ def main(args):
     print(f"Image size: {args.img_size}x{args.img_size}x3={args.img_size*args.img_size*3}")
     print(f"Image Compression: {num_params/(args.img_size*args.img_size*3)}")
     print(f"Video Compression: {num_params/(args.rollout_steps*args.img_size*args.img_size*3)}")
+    n_epochs = args.n_iters * args.bs * args.bptt_steps / (args.pool_size * args.rollout_steps)
+    print(f"Estimated # of epochs: {n_epochs:.2f}")
 
     time2grad = {}
     def save_grad(t):
