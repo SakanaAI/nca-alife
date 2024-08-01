@@ -112,6 +112,7 @@ def main(args):
         transforms.RandomPerspective(distortion_scale=0.5, p=1., fill=0.),
     ])
     crop_img_scales = [transforms.RandomResizedCrop(224, scale=(s, s), ratio=(3./4., 4./3.)) for s in spatial_scales]
+    opt_flow_resize = transforms.Resize(128)
 
     # ------------------------ Model ------------------------
     nca = NCA(d_state=args.d_state, perception=args.perception, kernel_size=args.kernel_size, padding_mode=args.padding_mode,
@@ -173,8 +174,9 @@ def main(args):
         # ------------------------ Loss Spatial Novelty ------------------------
         loss_dict['loss_spatial_novelty'] = rearrange(z_img, "B S D -> B S D") @ rearrange(z_img, "B S D -> B D S") # B S S
         # ------------------------ Loss Optical Flow ------------------------
-        optical_flow = flow_net.get_optical_flow(vid[:, -2], vid[:, -1]) # B 2 H W
-        loss_dict['loss_optical_flow'] = (optical_flow.norm(dim=-3).mean(dim=(-1, -2))-args.optical_flow_mag).abs()
+        if args.coef_optical_flow > 0:
+            optical_flow = flow_net.get_optical_flow(opt_flow_resize(vid[:, -2]), opt_flow_resize(vid[:, -1])) # B 2 H W
+            loss_dict['loss_optical_flow'] = (optical_flow.norm(dim=-3).mean(dim=(-1, -2))-args.optical_flow_mag).abs()
 
         loss = 0.
         for k in loss_dict:
