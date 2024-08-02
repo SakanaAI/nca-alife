@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from einops import rearrange
 
 class MyFlaxCLIP():
-    def __init__(self, clip_model):
+    def __init__(self, clip_model="clip-vit-base-patch32"):
         self.processor = AutoProcessor.from_pretrained(f"openai/{clip_model}")
         self.clip_model = FlaxCLIPModel.from_pretrained(f"openai/{clip_model}")
 
