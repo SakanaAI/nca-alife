@@ -76,7 +76,6 @@ class FlaxCLIPVisionEmbeddings(nn.Module):
         # patch_embeds = self.patch_embedding(pixel_values)
         pixel_values = rearrange(pixel_values, '... (H ph) (W pw) D -> ... H W (ph pw D)',
                                  ph=self.config.patch_size, pw=self.config.patch_size)
-        # print(pixel_values.shape) # (16, 7, 7, 3072)
         patch_embeds = self.patch_embedding(pixel_values)
         # print(patch_embeds.shape) # (16, 7, 7, 768)
 
@@ -395,41 +394,96 @@ class FlaxCLIPVisionModule(nn.Module):
 if __name__ == "__main__":
     import jax.numpy as jnp
     from tqdm.auto import tqdm
-    print('hello')
+    import copy
 
-    config = CLIPVisionConfig()
-    print(config)
-    # net = FlaxCLIPVisionModule(config)
+    print('loading jax')
+    rng = jax.random.PRNGKey(0)
+    print('done')
+    img = jax.random.uniform(rng, (5, 224, 224, 3))
 
-    # x = jnp.zeros((16, 224, 224, 3))
+    from clip_jax import MyFlaxCLIPBackprop
+    clip = MyFlaxCLIPBackprop()
+
+    z = jax.vmap(clip.embed_img)(img)
+    z2 = jax.vmap(clip.embed_img_new)(img)
+    print(jnp.abs(z-z2).max())
+
+    # print((z*z).sum(axis=-1))
+    # print((z2*z2).sum(axis=-1))
+    # print((z*z2).sum(axis=-1))
+
+    # print((z*z).sum(axis=-1).mean())
+    # print((z2*z2).sum(axis=-1).mean())
+    # print((z*z2).sum(axis=-1).mean())
+
+    # Original CLIP
+    # from transformers import AutoProcessor, FlaxCLIPModel
+    # model = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+    # processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    # net = FlaxCLIPVisionModule(model.config.vision_config)
+    # x = jnp.zeros((1, 224, 224, 3))
     # rng = jax.random.PRNGKey(0)
     # params = net.init(rng, x)
-    # # print(jax.tree.map(lambda x: x.shape, params))
 
+    # print(model.params['vision_model'].keys())
+    # print(params['params']['vision_model'].keys())
+
+    # print(model.params['vision_model']['embeddings'].keys())
+    # print(params['params']['vision_model']['embeddings'].keys())
+
+
+
+    # z_img = model.get_image_features(img)
+    # print(z_img.mean())
 
     # def loss_fn(x):
-    #     y = net.apply(params, x)
-    #     return y.pooler_output.mean()
-
-    # y = loss_fn(x)
-
+    #     y = model.get_image_features(x)
+    #     return y.mean()
     # grad_fn = jax.jit(jax.value_and_grad(loss_fn))
 
     # for i in tqdm(range(100)):
-    #     y, grad = grad_fn(x)
+    #     y = loss_fn(img)
+    # for i in tqdm(range(100)):
+    #     y, grad = grad_fn(img)
+
+    # print(dir(model))
+    # config = model.config.vision_config
+    # print(config)
+    # config = CLIPVisionConfig()
+    # net = FlaxCLIPVisionModule(config)
 
 
 
-    from transformers import AutoProcessor, FlaxCLIPModel
-    model = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    # print(model.module.vision_model.embeddings)
 
-    print(dir(model))
-    print(model.module.vision_model)
-    # net = model.vision_model
-    # params = model.params
+    # print(dir(model))
 
-    # print(params)
+
+
+    # print(jax.tree.map(lambda x: x.shape, model.params['vision_model']['embeddings']['patch_embedding']))
+
+    # config = CLIPVisionConfig()
+    # net = FlaxCLIPVisionModule(config)
+    # x = jnp.zeros((16, 224, 224, 3))
+    # rng = jax.random.PRNGKey(0)
+    # params = net.init(rng, x)
+    # print(jax.tree.map(lambda x: x.shape, params['params']['vision_model']['embeddings']['patch_embedding']))
+
+    # params = copy.copy(model.params)
+    # params['vision_model']['embeddings']['patch_embedding']['kernel'] = params['vision_model']['embeddings']['patch_embedding']['kernel'].reshape(32*32*3, 768)
+    # print(jax.tree.map(lambda x: x.shape, model.params['vision_model']['embeddings']['patch_embedding']))
+
+
+    # for a, b in zip(jax.tree.flatten(model.params), jax.tree.flatten(params)):
+        # print(a.shape, b.shape, a.shape==b.shape)
+
+
+
+
+
+
+
 
 
 
