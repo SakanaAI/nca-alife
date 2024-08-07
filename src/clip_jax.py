@@ -61,7 +61,7 @@ class MyFlaxCLIPBackprop():
         z_text = self.clip_model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
         return z_text / jnp.linalg.norm(z_text, axis=-1, keepdims=True)
     
-    def embed_img(self, img):
+    def embed_img_old(self, img):
         """
         img shape (H W C) and values in [0, 1].
         returns shape (D)
@@ -70,7 +70,11 @@ class MyFlaxCLIPBackprop():
         z_img = self.clip_model.get_image_features(img)[0]
         return z_img / jnp.linalg.norm(z_img, axis=-1, keepdims=True)
     
-    def embed_img_new(self, img):
+    def embed_img(self, img):
+        """
+        img shape (H W C) and values in [0, 1].
+        returns shape (D)
+        """
         img = rearrange((img-self.img_mean)/self.img_std, "H W C -> 1 H W C")
         vision_outputs = self.my_flax_vision.apply(dict(params=self.my_params), img)
         pooled_output = vision_outputs[1] # pooled_output

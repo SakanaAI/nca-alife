@@ -404,48 +404,17 @@ if __name__ == "__main__":
     from clip_jax import MyFlaxCLIPBackprop
     clip = MyFlaxCLIPBackprop()
 
-    z = jax.vmap(clip.embed_img)(img)
-    z2 = jax.vmap(clip.embed_img_new)(img)
-    print(jnp.abs(z-z2).max())
+    def loss_fn(x):
+        y = clip.embed_img(x)
+        return y.mean()
+    grad_fn = jax.jit(jax.value_and_grad(loss_fn))
+    loss_fn = jax.jit(loss_fn)
 
-    # print((z*z).sum(axis=-1))
-    # print((z2*z2).sum(axis=-1))
-    # print((z*z2).sum(axis=-1))
+    # for i in tqdm(range(1000)):
+    #     y = loss_fn(img[0])
+    # for i in tqdm(range(1000)):
+    #     y, grad = grad_fn(img[0])
 
-    # print((z*z).sum(axis=-1).mean())
-    # print((z2*z2).sum(axis=-1).mean())
-    # print((z*z2).sum(axis=-1).mean())
-
-    # Original CLIP
-    # from transformers import AutoProcessor, FlaxCLIPModel
-    # model = FlaxCLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    # processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-    # net = FlaxCLIPVisionModule(model.config.vision_config)
-    # x = jnp.zeros((1, 224, 224, 3))
-    # rng = jax.random.PRNGKey(0)
-    # params = net.init(rng, x)
-
-    # print(model.params['vision_model'].keys())
-    # print(params['params']['vision_model'].keys())
-
-    # print(model.params['vision_model']['embeddings'].keys())
-    # print(params['params']['vision_model']['embeddings'].keys())
-
-
-
-    # z_img = model.get_image_features(img)
-    # print(z_img.mean())
-
-    # def loss_fn(x):
-    #     y = model.get_image_features(x)
-    #     return y.mean()
-    # grad_fn = jax.jit(jax.value_and_grad(loss_fn))
-
-    # for i in tqdm(range(100)):
-    #     y = loss_fn(img)
-    # for i in tqdm(range(100)):
-    #     y, grad = grad_fn(img)
 
     # print(dir(model))
     # config = model.config.vision_config
