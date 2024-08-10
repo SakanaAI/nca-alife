@@ -60,6 +60,7 @@ group.add_argument("--coef_prompt", type=float, default=1.)
 
 group = parser.add_argument_group("optimization")
 group.add_argument("--algo", type=str, default="Sep_CMA_ES")
+group.add_argument("--sigma", type=float, default=1.)
 group.add_argument("--rollout_steps", type=int, default=200)
 group.add_argument("--bs", type=int, default=32)
 group.add_argument("--n_iters", type=int, default=10000)
@@ -73,27 +74,27 @@ def parse_args(*args, **kwargs):
 
 def main(args):
     print('starting main')
-    config_lenia = ConfigLenia()
+    config_lenia = ConfigLenia(pattern_id='5N7KKM')
     print('creating lenia')
     lenia = Lenia(config_lenia)
     print('creating clip')
     clip_model = MyFlaxCLIP()
-    lenia_step = partial(lenia.step, phenotype_size=config_lenia.world_size, center_phenotype=True, record_phenotype=True)
     resize_fn = partial(jax.image.resize, shape=(224, 224, 3), method='nearest')
 
     print('embedding text')
     z_text = clip_model.embed_text([args.prompt]) # 1 D
     init_carry, init_genotype, other_asset = lenia.load_pattern(lenia.pattern)
 
-    def unroll_geno(geno):
+    def unroll_geno(geno, center_phenotype=False):
         geno = jax.nn.sigmoid(geno)  # NOTE: I AM DOING SIGMOID
         carry = lenia.express_genotype(init_carry, geno)
+        lenia_step = partial(lenia.step, phenotype_size=config_lenia.world_size, center_phenotype=center_phenotype, record_phenotype=True)
         carry, accum = jax.lax.scan(lenia_step, init=carry, xs=jnp.arange(args.rollout_steps)) # changed from lenia._config.n_step
         return accum.phenotype
 
     def loss_fn(geno):
-        pheno = unroll_geno(geno)
-        img = pheno[-1, 40:88, 40:88, :]
+        pheno = unroll_geno(geno, center_phenotype=True) # T H W D
+        img = pheno[-1, 40:88, 40:88, :] # H W D
         z_img = clip_model.embed_img(resize_fn(img)) # D
 
         loss_dict = {}
@@ -114,12 +115,19 @@ def main(args):
     # genos = jax.nn.sigmoid(genos)
 
     print('creating strategy')
-    strategy = evosax.Strategies[args.algo](popsize=args.bs, num_dims=45+32*32*3)
-    es_params = strategy.default_params.replace(init_min=-5, init_max=5)
+    strategy = evosax.Strategies[args.algo](popsize=args.bs, num_dims=45+32*32*3, sigma_init=args.sigma)
+    # es_params = strategy.default_params.replace(init_min=-5, init_max=5)
+    es_params = strategy.default_params.replace()
 
     print('creating state')
     rng, _rng = split(rng)
     state = strategy.initialize(_rng, es_params)
+
+    def inv_sigmoid(x):
+        return jnp.log(x) - jnp.log1p(-x)
+
+    # NOTE: change the mean to the initial genotype
+    state = state.replace(mean=inv_sigmoid(init_genotype.clip(1e-6, 1.-1e-6)))
 
     @jax.jit
     def do_iter(state, rng):
@@ -141,12 +149,13 @@ def main(args):
 
         if args.save_dir is not None and i_iter % (args.n_iters//10) == 0:
             geno = state.best_member
-            pheno = unroll_geno(geno)  # T H W D
+            pheno = unroll_geno(geno, center_phenotype=False)  # T H W D
             vid = np.array((pheno*255).astype(jnp.uint8))
             util.save_pkl(args.save_dir, 'vid', vid)
             imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=20, codec='libx264')
             imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=20)
 
+            pheno = unroll_geno(geno, center_phenotype=True)  # T H W D
             img = pheno[-1, 40:88, 40:88, :] # H W D
             plt.imsave(f'{args.save_dir}/img_{i_iter}.png', img)
 
