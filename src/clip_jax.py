@@ -1,8 +1,11 @@
+import os
 
-from transformers import AutoProcessor, FlaxCLIPModel
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import jax.numpy as jnp
-
 from einops import rearrange
+from transformers import AutoProcessor, FlaxCLIPModel
+
 
 class MyFlaxCLIP():
     def __init__(self, clip_model="clip-vit-base-patch32"):
@@ -32,9 +35,13 @@ class MyFlaxCLIP():
 
 
 
-from modeling_flax_clip import FlaxCLIPVisionModule
 import copy
+
 import jax
+
+from modeling_flax_clip import FlaxCLIPVisionModule
+
+
 class MyFlaxCLIPBackprop():
     def __init__(self, clip_model="clip-vit-base-patch32"):
         assert clip_model=="clip-vit-base-patch32", "Only clip-vit-base-patch32 is supported for backpropagation"
