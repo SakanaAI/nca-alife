@@ -31,6 +31,9 @@ group.add_argument("--d_state", type=int, default=16)
 group.add_argument("--n_groups", type=int, default=1)
 group.add_argument("--rollout_steps", type=int, default=512)
 
+group.add_argument("--identity_bias", type=float, default=0.)
+group.add_argument("--temperature", type=float, default=1.0)
+
 group = parser.add_argument_group("data")
 group.add_argument("--prompts", type=str, default="an artificial cell,a bacterium")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
@@ -49,7 +52,8 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    dnca = DNCA(grid_size=args.grid_size, d_state=args.d_state, n_groups=args.n_groups)
+    dnca = DNCA(grid_size=args.grid_size, d_state=args.d_state, n_groups=args.n_groups,
+                identity_bias=args.identity_bias, temperature=args.temperature)
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text(args.prompts.split(",")) # P D
 

@@ -19,10 +19,12 @@ class DNCANetwork(nn.Module):
 
 
 class DNCA():
-    def __init__(self, grid_size=64, d_state=16, n_groups=1):
+    def __init__(self, grid_size=64, d_state=16, n_groups=1, identity_bias=0., temperature=1.):
         self.grid_size = grid_size
         self.d_state, self.n_groups = d_state, n_groups
         self.dnca = DNCANetwork(d_state=d_state*n_groups)
+
+        self.identity_bias, self.temperature = identity_bias, temperature
 
     def default_params(self, rng):
         rng, _rng = split(rng)
@@ -49,8 +51,8 @@ class DNCA():
         logits = self.dnca.apply(params['net_params'], state_oh_f)
         logits = rearrange(logits, "H W (G D) -> H W G D", G=self.n_groups)
         
-        identity_bias = jax.nn.sigmoid(params['identity_bias'])*10
-        next_state = jax.random.categorical(rng, logits + state_oh*identity_bias, axis=-1)
+        # identity_bias = jax.nn.sigmoid(params['identity_bias'])*10
+        next_state = jax.random.categorical(rng, (logits + state_oh*self.identity_bias)/self.temperature, axis=-1)
         return next_state
     
     def render_state(self, state, params, img_size=None):
