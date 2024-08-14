@@ -56,13 +56,13 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    dnca = DNCA(grid_size=args.grid_size, d_state=args.d_state, n_groups=args.n_groups,
-                identity_bias=args.identity_bias, temperature=args.temperature)
+    sim = DNCA(grid_size=args.grid_size, d_state=args.d_state, n_groups=args.n_groups,
+               identity_bias=args.identity_bias, temperature=args.temperature)
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text(args.prompts.split(",")) # P D
 
     rng = jax.random.PRNGKey(args.seed)
-    param_reshaper = evosax.ParameterReshaper(dnca.default_params(rng))
+    param_reshaper = evosax.ParameterReshaper(sim.default_params(rng))
     if args.algo == "RandomSearch":
         strategy = evosax.RandomSearch(popsize=args.pop_size, num_dims=param_reshaper.total_params, )
         es_params = strategy.default_params.update(range_min=-3, range_max=3.)
@@ -78,15 +78,15 @@ def main(args):
 
     def calc_loss(rng, params):
         def step(state, _rng):
-            next_state = dnca.step_state(_rng, state, params)
+            next_state = sim.step_state(_rng, state, params)
             return next_state, state
-        state_init = dnca.init_state(rng, params)
+        state_init = sim.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
 
         sr = args.rollout_steps//args.n_rollout_imgs
         idx_downsample = jnp.arange(sr-1, args.rollout_steps, sr)
-        state_vid = state_vid[idx_downsample] # downsample
-        vid = jax.vmap(partial(dnca.render_state, params=params, img_size=224))(state_vid) # T H W C
+        state_vid = jax.tree.map(lambda x: x[idx_downsample], state_vid) # downsample
+        vid = jax.vmap(partial(sim.render_state, params=params, img_size=224))(state_vid) # T H W C
         z_img = jax.vmap(clip_model.embed_img)(vid) # T D
 
         scores_novelty = (z_img @ z_img.T) # T T
@@ -116,11 +116,11 @@ def main(args):
     @jax.jit
     def inference_video(rng, params):
         def step(state, _rng):
-            next_state = dnca.step_state(_rng, state, params)
+            next_state = sim.step_state(_rng, state, params)
             return next_state, state
-        state_init = dnca.init_state(rng, params)
+        state_init = sim.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, int(args.rollout_steps*1.5)))
-        vid = jax.vmap(partial(dnca.render_state, params=params, img_size=256))(state_vid) # T H W C
+        vid = jax.vmap(partial(sim.render_state, params=params, img_size=256))(state_vid) # T H W C
         return vid
 
     data = []

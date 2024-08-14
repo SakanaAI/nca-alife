@@ -18,37 +18,33 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_particle_life import ParticleLife
+from models_plife import ParticleLife
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
 group.add_argument("--seed", type=int, default=0)
 group.add_argument("--save_dir", type=str, default=None)
-group.add_argument("--dtype", type=str, default='float32')
-group.add_argument("--device", type=str, default='cuda:0')
 
 group = parser.add_argument_group("model")
 group.add_argument("--n_particles", type=int, default=5000)
-group.add_argument("--n_colors", type=int, default=4)
-group.add_argument("--n_dims", type=int, default=2)
-group.add_argument("--x_dist_bins", type=int, default=7)
+group.add_argument("--n_colors", type=int, default=6)
+group.add_argument("--search_space", type=str, default="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist")
+group.add_argument("--render_radius", type=float, default=7e-3)
+group.add_argument("--rollout_steps", type=int, default=1024)
 
 group = parser.add_argument_group("data")
+group.add_argument("--n_rollout_imgs", type=int, default=4)
 group.add_argument("--prompts", type=str, default="an artificial cell,a bacterium")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
-
-group.add_argument("--render_radius", type=float, default=5e-3)
-group.add_argument("--render_sharpness", type=float, default=20.)
+group.add_argument("--coef_prompts", type=float, default=1.)
+group.add_argument("--coef_novelty", type=float, default=0.)
 
 group = parser.add_argument_group("optimization")
-group.add_argument("--rollout_steps", type=int, default=1000)
-
+group.add_argument("--algo", type=str, default="Sep_CMA_ES") # Sep_CMA_ES or SimAnneal or RandomSearch
 group.add_argument("--bs", type=int, default=4)
-group.add_argument("--n_iters", type=int, default=128)
-
-group.add_argument("--mr", type=float, default=1e-2)
-group.add_argument("--anneal_prob_end", type=float, default=1e-4)
-group.add_argument("--mutate_params", type=str, default="alpha") # "alpha+beta"
+group.add_argument("--pop_size", type=int, default=16)
+group.add_argument("--n_iters", type=int, default=10000)
+group.add_argument("--sigma", type=float, default=1.)
 
 def parse_args(*args, **kwargs):
     args = parser.parse_args(*args, **kwargs)
@@ -58,136 +54,103 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    rng = jax.random.PRNGKey(args.seed)
-
-    plife = ParticleLife(args.n_particles, args.n_colors, n_dims=args.n_dims, x_dist_bins=args.x_dist_bins)
+    sim = ParticleLife(n_particles=args.n_particles, n_colors=args.n_colors,
+                       search_space=args.search_space, render_radius=args.render_radius)  
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text(args.prompts.split(",")) # P D
 
-    render_fn = partial(plife.render_state_heavy, img_size=224, radius=args.render_radius, sharpness=args.render_sharpness)
-    render_fn_vid = partial(plife.render_state_heavy, img_size=512, radius=args.render_radius, sharpness=args.render_sharpness)
-    render_fn_large = partial(plife.render_state_heavy, img_size=512, radius=args.render_radius, sharpness=args.render_sharpness)
-
-    def rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=False):
-        state_init = plife.get_init_state(rng, env_params)
-        def step(state, _):
-            next_state = plife.forward_step(state, env_params)
-            return next_state, (state if return_statevid else None)
-        state_final, state_vid = jax.lax.scan(step, state_init, length=rollout_steps)
-        return state_init, state_final, state_vid
-
-    def random_individual(rng):
-        x = plife.get_default_env_params()
-        if 'beta' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['beta'] = jax.random.uniform(_rng, x['beta'].shape, minval=0., maxval=1.)
-        if 'alpha' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['alpha'] = jax.random.normal(_rng, x['alpha'].shape)
-        if 'mass' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['mass'] = 10.**jax.random.uniform(_rng, x['mass'].shape, minval=-1.5, maxval=0.) # .03 to 1
-        if 'dt' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['dt'] = 10.**jax.random.uniform(_rng, x['dt'].shape, minval=-4., maxval=-1.)
-        if 'half_life' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['half_life'] = 10.**jax.random.uniform(_rng, x['half_life'].shape, minval=-3., maxval=0.)
-        if 'rmax' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['rmax'] = 10.**jax.random.uniform(_rng, x['rmax'].shape, minval=-2., maxval=0.)
-        if 'c_dist' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['c_dist'] = jax.random.normal(_rng, x['c_dist'].shape)
-        if 'x_dist' in args.mutate_params:
-            rng, _rng = split(rng)
-            x['x_dist'] = jax.random.normal(_rng, x['x_dist'].shape)
-        return x
-
-    def mutate(rng, x, mr=args.mr):
-        x = {k: v for k, v in x.items()}
-        rng, _rng = split(rng)
-        xp = random_individual(_rng)
-        for k in x:
-            if k in args.mutate_params:
-                rng, _rng = split(rng)
-                mask = (jax.random.uniform(_rng, x[k].shape) < mr).astype(jnp.float32)
-                x[k] = xp[k]*mask + x[k]*(1.-mask)
-        return x
-        
-    def calc_fitness(rng, x):
-        env_params = x
-        state_init, state_final, state_vid = rollout_plife(rng, env_params, return_statevid=False)
-        img_init = render_fn(state_init, env_params)
-        img_final = render_fn(state_final, env_params)
-        z_init = clip_model.embed_img(img_init)
-        z_final = clip_model.embed_img(img_final)
-        score = (z_text @ z_final.T).mean()
-        return dict(env_params=env_params, state_init=state_init, state_final=state_final, z_init=z_init, z_final=z_final, score=score)
-
-    # @jax.jit
-    def init_iter(rng):
-        _rng1, _rng2 = split(rng)
-        x = random_individual(_rng1)
-        m = jax.vmap(calc_fitness, in_axes=(0, None))(split(_rng2, args.bs), x)
-        return (x, m)
-
-    @jax.jit
-    def do_iter(rng, i_iter, x_m):
-        _rng1, _rng2, _rng3 = split(rng, 3)
-
-        x, m = x_m
-        xp = mutate(_rng1, x)
-        mp = jax.vmap(calc_fitness, in_axes=(0, None))(split(_rng2, args.bs), xp)
-
-        cond1 = mp['score'].mean() > m['score'].mean()
-        cond2 = jax.random.uniform(_rng3) < (args.anneal_prob_end ** (i_iter/args.n_iters))
-        cond = jnp.logical_or(cond1, cond2)
-        x_m = jax.tree.map(lambda a, b: jax.lax.select(cond, a, b), (xp, mp), (x, m))
-        return x_m, (xp, mp)
-
-    data_dense, data_sparse = [], []
+    rng = jax.random.PRNGKey(args.seed)
+    param_reshaper = evosax.ParameterReshaper(sim.default_params(rng))
+    if args.algo == "RandomSearch":
+        strategy = evosax.RandomSearch(popsize=args.pop_size, num_dims=param_reshaper.total_params, )
+        es_params = strategy.default_params.update(range_min=-3, range_max=3.)
+    elif args.algo == "SimAnneal":
+        strategy = evosax.SimAnneal(popsize=args.pop_size, num_dims=param_reshaper.total_params, sigma_init=args.sigma)
+        es_params = strategy.default_params
+    elif args.algo == "Sep_CMA_ES":
+        strategy = evosax.Sep_CMA_ES(popsize=args.pop_size, num_dims=param_reshaper.total_params, sigma_init=args.sigma)
+        es_params = strategy.default_params
 
     rng, _rng = split(rng)
-    carry = init_iter(rng)
-    for i_iter in tqdm(range(args.n_iters)):
+    es_state = strategy.initialize(_rng, es_params)
+
+    def calc_loss(rng, params):
+        def step(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, state
+        state_init = sim.init_state(rng, params)
+        state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
+
+        sr = args.rollout_steps//args.n_rollout_imgs
+        idx_downsample = jnp.arange(sr-1, args.rollout_steps, sr)
+        state_vid = jax.tree.map(lambda x: x[idx_downsample], state_vid) # downsample
+        vid = jax.vmap(partial(sim.render_state, params=params, img_size=224))(state_vid) # T H W C
+        z_img = jax.vmap(clip_model.embed_img)(vid) # T D
+
+        scores_novelty = (z_img @ z_img.T) # T T
+        scores_novelty = jnp.tril(scores_novelty, k=-1)
+        loss_novelty = scores_novelty[1:, :].max(axis=-1).mean()
+
+        scores = z_text @ z_img.T # P T
+        loss_prompts = -scores.max(axis=-1).mean()
+
+        loss = loss_prompts * args.coef_prompts + loss_novelty * args.coef_novelty
+        loss_dict = dict(loss=loss, loss_prompts=loss_prompts, loss_novelty=loss_novelty)
+        return loss, loss_dict
+
+    @jax.jit
+    def do_iter(es_state, rng):
         rng, _rng = split(rng)
-        carry, (_, metrics) = do_iter(_rng, i_iter, carry)
+        x, next_es_state = strategy.ask(_rng, es_state, es_params)
+        params = param_reshaper.reshape(x)
+        calc_loss_vv = jax.vmap(jax.vmap(calc_loss, in_axes=(0, None)), in_axes=(None, 0))
+        rng, _rng = split(rng)
+        loss, loss_dict = calc_loss_vv(split(_rng, args.bs), params)
+        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=-1), (loss, loss_dict))  # mean over bs
+        next_es_state = strategy.tell(x, loss, next_es_state, es_params)
+        data = dict(best_loss=next_es_state.best_fitness, generation_loss=loss.mean(), loss_dict=loss_dict)
+        return next_es_state, data
 
-        data_dense.append(metrics)
-        if i_iter % (args.n_iters//32)==0:
-            metrics = copy.copy(metrics)
-            metrics['img_init_clip'] = jax.vmap(render_fn)(metrics['state_init'], metrics['env_params']) # vmap over seeds
-            metrics['img_final_clip'] = jax.vmap(render_fn)(metrics['state_final'], metrics['env_params'])
-            metrics['img_init'] = jax.vmap(render_fn_large)(metrics['state_init'], metrics['env_params'])
-            metrics['img_final'] = jax.vmap(render_fn_large)(metrics['state_final'], metrics['env_params'])
-            data_sparse.append(metrics)
-    
-    if args.save_dir is not None:
-        util.save_pkl(args.save_dir, "data_dense", data_dense)
-        util.save_pkl(args.save_dir, "data_sparse", data_sparse)
+    @jax.jit
+    def inference_video(rng, params):
+        def step(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, state
+        state_init = sim.init_state(rng, params)
+        state_final, state_vid = jax.lax.scan(step, state_init, split(rng, int(args.rollout_steps*1.5)))
+        vid = jax.vmap(partial(sim.render_state, params=params, img_size=256))(state_vid) # T H W C
+        return vid
 
-        _, metrics = carry
-        metrics = copy.copy(metrics)
-        metrics['img_init_clip'] = jax.vmap(render_fn)(metrics['state_init'], metrics['env_params']) # vmap over seeds
-        metrics['img_final_clip'] = jax.vmap(render_fn)(metrics['state_final'], metrics['env_params'])
-        metrics['img_init'] = jax.vmap(render_fn_large)(metrics['state_init'], metrics['env_params'])
-        metrics['img_final'] = jax.vmap(render_fn_large)(metrics['state_final'], metrics['env_params'])
-        util.save_pkl(args.save_dir, "final_metrics", metrics)
+    data = []
+    pbar = tqdm(range(args.n_iters))
+    for i_iter in pbar:
+        rng, _rng = split(rng)
+        es_state, di = do_iter(es_state, _rng)
 
-        # render video
-        env_params = carry[0]
-        _, _, statevid = rollout_plife(rng, env_params, rollout_steps=args.rollout_steps, return_statevid=True)
-        # print('statevid ', jax.tree.map(lambda x: x.shape, statevid))
-        # print('env_params ', jax.tree.map(lambda x: x.shape, env_params))
+        data.append(di)
+        pbar.set_postfix(best_loss=es_state.best_fitness.item())
+        if args.save_dir is not None and (i_iter % (args.n_iters//10)==0 or i_iter==args.n_iters-1):
+            data_save = jax.tree.map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
+            util.save_pkl(args.save_dir, "data", data_save)
+            best = jax.tree.map(lambda x: np.array(x), (es_state.best_member, es_state.best_fitness))
+            util.save_pkl(args.save_dir, "best", best)
 
-        vid = jax.vmap(render_fn_vid, in_axes=(0, None))(statevid, env_params)
-        vid = np.array((vid*255).astype(jnp.uint8))
-        # print(vid.shape, vid.size, vid.dtype, vid.min(), vid.max())
-        imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=100, codec='libx264')
-        
+            params = param_reshaper.reshape_single(es_state.best_member)
+            vid = inference_video(rng, params)
+            vid = np.array((vid*255).astype(jnp.uint8))
+            util.save_pkl(args.save_dir, "vid", vid)
+            imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
+            imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
 
+            plt.figure(figsize=(10, 5))
+            plt.subplot(211)
+            plt.plot(data_save['best_loss'], color='green', label='best loss')
+            plt.plot(data_save['generation_loss'], color='lightgreen', label='generation loss')
+            plt.axhline(data_save['generation_loss'][0], color='r', linestyle='dashed', label='initial loss')
+            plt.legend()
+            plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
+            plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
+            plt.close()
 
 if __name__ == '__main__':
     main(parse_args())
-
