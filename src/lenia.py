@@ -112,7 +112,6 @@ class ConfigLenia:
 
 
 class Lenia:
-
 	def __init__(self, config: ConfigLenia):
 		self._config = config
 		self.pattern = patterns[self._config.pattern_id]

@@ -49,7 +49,7 @@ class ParticleLife():
             elif name=="half_life":
                 return 10.**(jax.nn.sigmoid(params[name])*1.5-2.5) # .003 to .1
             elif name=="rmax":
-                return 10.**(jax.nn.sigmoid(params[name])*2.-2.5) # 3e-3 to 3e-1
+                return 10.**(jax.nn.sigmoid(params[name])*1.5-2.) # .01 to 3e-1
             elif name=="c_dist":
                 return params[name]
             elif name=="x_dist":

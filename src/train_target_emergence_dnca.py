@@ -35,10 +35,14 @@ group.add_argument("--identity_bias", type=float, default=0.)
 group.add_argument("--temperature", type=float, default=1.0)
 
 group = parser.add_argument_group("data")
+group.add_argument("--n_rollout_imgs", type=int, default=4)
 group.add_argument("--prompts", type=str, default="an artificial cell,a bacterium")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
+group.add_argument("--coef_prompts", type=float, default=1.)
+group.add_argument("--coef_novelty", type=float, default=0.)
 
 group = parser.add_argument_group("optimization")
+group.add_argument("--algo", type=str, default="Sep_CMA_ES") # Sep_CMA_ES or SimAnneal or RandomSearch
 group.add_argument("--bs", type=int, default=4)
 group.add_argument("--pop_size", type=int, default=16)
 group.add_argument("--n_iters", type=int, default=10000)
@@ -59,8 +63,15 @@ def main(args):
 
     rng = jax.random.PRNGKey(args.seed)
     param_reshaper = evosax.ParameterReshaper(dnca.default_params(rng))
-    strategy = evosax.Sep_CMA_ES(popsize=args.pop_size, num_dims=param_reshaper.total_params, sigma_init=args.sigma)
-    es_params = strategy.default_params
+    if args.algo == "RandomSearch":
+        strategy = evosax.RandomSearch(popsize=args.pop_size, num_dims=param_reshaper.total_params, )
+        es_params = strategy.default_params.update(range_min=-3, range_max=3.)
+    elif args.algo == "SimAnneal":
+        strategy = evosax.SimAnneal(popsize=args.pop_size, num_dims=param_reshaper.total_params, sigma_init=args.sigma)
+        es_params = strategy.default_params
+    elif args.algo == "Sep_CMA_ES":
+        strategy = evosax.Sep_CMA_ES(popsize=args.pop_size, num_dims=param_reshaper.total_params, sigma_init=args.sigma)
+        es_params = strategy.default_params
 
     rng, _rng = split(rng)
     es_state = strategy.initialize(_rng, es_params)
@@ -72,14 +83,22 @@ def main(args):
         state_init = dnca.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
 
-        sr = state_vid.shape[0]//8
-        state_vid = state_vid[sr-1::sr] # downsample
+        sr = args.rollout_steps//args.n_rollout_imgs
+        idx_downsample = jnp.arange(sr-1, args.rollout_steps, sr)
+        state_vid = state_vid[idx_downsample] # downsample
         vid = jax.vmap(partial(dnca.render_state, params=params, img_size=224))(state_vid) # T H W C
-
         z_img = jax.vmap(clip_model.embed_img)(vid) # T D
+
+        scores_novelty = (z_img @ z_img.T) # T T
+        scores_novelty = jnp.tril(scores_novelty, k=-1)
+        loss_novelty = scores_novelty[1:, :].max(axis=-1).mean()
+
         scores = z_text @ z_img.T # P T
-        loss = -scores.max(axis=-1).mean()
-        return loss
+        loss_prompts = -scores.max(axis=-1).mean()
+
+        loss = loss_prompts * args.coef_prompts + loss_novelty * args.coef_novelty
+        loss_dict = dict(loss=loss, loss_prompts=loss_prompts, loss_novelty=loss_novelty)
+        return loss, loss_dict
 
     @jax.jit
     def do_iter(es_state, rng):
@@ -88,10 +107,11 @@ def main(args):
         params = param_reshaper.reshape(x)
         calc_loss_vv = jax.vmap(jax.vmap(calc_loss, in_axes=(0, None)), in_axes=(None, 0))
         rng, _rng = split(rng)
-        loss = calc_loss_vv(split(_rng, args.bs), params)
-        loss = loss.mean(axis=-1)
+        loss, loss_dict = calc_loss_vv(split(_rng, args.bs), params)
+        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=-1), (loss, loss_dict))  # mean over bs
         next_es_state = strategy.tell(x, loss, next_es_state, es_params)
-        return next_es_state, dict(best_loss=es_state.best_fitness, pop_loss=loss.mean())
+        data = dict(best_loss=next_es_state.best_fitness, generation_loss=loss.mean(), loss_dict=loss_dict)
+        return next_es_state, data
 
     @jax.jit
     def inference_video(rng, params):
@@ -108,9 +128,9 @@ def main(args):
     for i_iter in pbar:
         rng, _rng = split(rng)
         es_state, di = do_iter(es_state, _rng)
-        data.append(di)
 
-        pbar.set_postfix(**di)
+        data.append(di)
+        pbar.set_postfix(best_loss=es_state.best_fitness.item())
         if args.save_dir is not None and (i_iter % (args.n_iters//10)==0 or i_iter==args.n_iters-1):
             data_save = jax.tree.map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
             util.save_pkl(args.save_dir, "data", data_save)
@@ -121,11 +141,15 @@ def main(args):
             vid = inference_video(rng, params)
             vid = np.array((vid*255).astype(jnp.uint8))
             util.save_pkl(args.save_dir, "vid", vid)
-            # imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
+            imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
             imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
 
             plt.figure(figsize=(10, 5))
-            plt.subplot(211); plt.plot(data_save['best_loss']); plt.ylim(-.4, -.2)
+            plt.subplot(211)
+            plt.plot(data_save['best_loss'], color='green', label='best loss')
+            plt.plot(data_save['generation_loss'], color='lightgreen', label='generation loss')
+            plt.axhline(data_save['generation_loss'][0], color='r', linestyle='dashed', label='initial loss')
+            plt.legend()
             plt.subplot(212); plt.imshow(rearrange(vid[::(vid.shape[0]//8), :, :, :], "T H W D -> (H) (T W) D"))
             plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
             plt.close()
