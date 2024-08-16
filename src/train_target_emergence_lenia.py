@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_plife import ParticleLife
+from models_lenia import Lenia
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -26,11 +26,9 @@ group.add_argument("--seed", type=int, default=0)
 group.add_argument("--save_dir", type=str, default=None)
 
 group = parser.add_argument_group("model")
-group.add_argument("--n_particles", type=int, default=5000)
-group.add_argument("--n_colors", type=int, default=6)
-group.add_argument("--search_space", type=str, default="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist")
-group.add_argument("--render_radius", type=float, default=7e-3)
-group.add_argument("--rollout_steps", type=int, default=1024)
+group.add_argument("--grid_size", type=int, default=128)
+group.add_argument("--phenotype_size", type=int, default=64)
+group.add_argument("--rollout_steps", type=int, default=256)
 
 group = parser.add_argument_group("data")
 group.add_argument("--n_rollout_imgs", type=int, default=4)
@@ -46,6 +44,8 @@ group.add_argument("--pop_size", type=int, default=16)
 group.add_argument("--n_iters", type=int, default=10000)
 group.add_argument("--sigma", type=float, default=1.)
 
+group.add_argument("--start_pattern", type=str, default="5N7KKM")
+
 def parse_args(*args, **kwargs):
     args = parser.parse_args(*args, **kwargs)
     for k, v in vars(args).items():
@@ -54,8 +54,8 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    sim = ParticleLife(n_particles=args.n_particles, n_colors=args.n_colors,
-                       search_space=args.search_space, render_radius=args.render_radius)  
+    sim = Lenia(grid_size=args.grid_size, center_phenotype=True, phenotype_size=args.phenotype_size, start_pattern=args.start_pattern)
+    sim_human = Lenia(grid_size=args.grid_size, center_phenotype=False, phenotype_size=args.phenotype_size, start_pattern=args.start_pattern)
     clip_model = MyFlaxCLIP(args.clip_model)
     z_text = clip_model.embed_text(args.prompts.split(",")) # P D
 
@@ -81,8 +81,9 @@ def main(args):
         state_init = sim.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
 
-        sr = args.rollout_steps//args.n_rollout_imgs
-        idx_downsample = jnp.arange(sr-1, args.rollout_steps, sr)
+        rng, _rng = split(rng)
+        idx_downsample = jax.random.randint(_rng, (args.n_rollout_imgs,), 0, args.rollout_steps)
+        idx_downsample = jnp.sort(idx_downsample)
         state_vid = jax.tree.map(lambda x: x[idx_downsample], state_vid) # downsample
         vid = jax.vmap(partial(sim.render_state, params=params, img_size=224))(state_vid) # T H W C
         z_img = jax.vmap(clip_model.embed_img)(vid) # T D
@@ -106,7 +107,7 @@ def main(args):
         calc_loss_vv = jax.vmap(jax.vmap(calc_loss, in_axes=(0, None)), in_axes=(None, 0))
         rng, _rng = split(rng)
         loss, loss_dict = calc_loss_vv(split(_rng, args.bs), params)
-        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=-1), (loss, loss_dict))  # mean over bs
+        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=1), (loss, loss_dict))  # mean over bs
         next_es_state = strategy.tell(x, loss, next_es_state, es_params)
         data = dict(best_loss=next_es_state.best_fitness, generation_loss=loss.mean(), loss_dict=loss_dict)
         return next_es_state, data
@@ -118,7 +119,7 @@ def main(args):
             return next_state, state
         state_init = sim.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, int(args.rollout_steps*1.5)))
-        vid = jax.vmap(partial(sim.render_state, params=params, img_size=256))(state_vid) # T H W C
+        vid = jax.vmap(partial(sim_human.render_state, params=params, img_size=256))(state_vid) # T H W C
         return vid
 
     data = []

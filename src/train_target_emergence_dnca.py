@@ -108,7 +108,7 @@ def main(args):
         calc_loss_vv = jax.vmap(jax.vmap(calc_loss, in_axes=(0, None)), in_axes=(None, 0))
         rng, _rng = split(rng)
         loss, loss_dict = calc_loss_vv(split(_rng, args.bs), params)
-        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=-1), (loss, loss_dict))  # mean over bs
+        loss, loss_dict = jax.tree.map(lambda x: x.mean(axis=1), (loss, loss_dict))  # mean over bs
         next_es_state = strategy.tell(x, loss, next_es_state, es_params)
         data = dict(best_loss=next_es_state.best_fitness, generation_loss=loss.mean(), loss_dict=loss_dict)
         return next_es_state, data
