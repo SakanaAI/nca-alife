@@ -31,7 +31,9 @@ class Lenia():
     
     def init_state(self, rng, params):
         carry = self.lenia.express_genotype(self.init_carry, jax.nn.sigmoid(params+self.base_params))
-        return dict(carry=carry, img=jnp.zeros((self.phenotype_size, self.phenotype_size, 3)))
+        state = dict(carry=carry, img=jnp.zeros((self.phenotype_size, self.phenotype_size, 3)))
+        # return state
+        return self.step_state(rng, state, params) # so init img is not zeros lol
     
     def step_state(self, rng, state, params):
         carry, accum = self.lenia.step(state['carry'], None, phenotype_size=self.phenotype_size, center_phenotype=self.center_phenotype, record_phenotype=True)
