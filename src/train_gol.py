@@ -58,24 +58,20 @@ def main(args):
             return next_state, state
         state_init = sim.init_state(rng, params)
         state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
-        print(state_vid.shape)
 
         sr = args.rollout_steps//args.n_rollout_imgs
         idx_downsample = jnp.arange(0, args.rollout_steps, sr)
         state_vid = jax.tree.map(lambda x: x[idx_downsample], state_vid) # downsample
-        print(state_vid.shape)
         vid = jax.vmap(partial(sim.render_state, params=params, img_size=224))(state_vid) # T H W C
-        print(vid.shape)
         z_img = jax.vmap(clip_model.embed_img)(vid) # T D
-        print(z_img.shape)
 
         scores_novelty = (z_img @ z_img.T) # T T
         scores_novelty = jnp.tril(scores_novelty, k=-1)
-        loss_novelty_clip = scores_novelty.max(axis=-1)
+        loss_novelty_clip = scores_novelty.max(axis=-1) # T
 
         img_novelty = jnp.abs(state_vid[None, :] - state_vid[:, None]).mean(axis=(-1, -2)) # T T
         img_novelty = jnp.tril(img_novelty, k=-1)
-        loss_novelty_engineered = img_novelty.max(axis=-1)
+        loss_novelty_engineered = img_novelty.max(axis=-1) # T
         return dict(loss_novelty_clip=loss_novelty_clip, loss_novelty_engineered=loss_novelty_engineered)
 
     @jax.jit
@@ -84,16 +80,6 @@ def main(args):
         data = calc_loss_v(split(rng, args.bs), params)
         data = jax.tree.map(lambda x: x.mean(axis=0), data)  # mean over bs
         return data
-
-    @jax.jit
-    def inference_video(rng, params):
-        def step(state, _rng):
-            next_state = sim.step_state(_rng, state, params)
-            return next_state, state
-        state_init = sim.init_state(rng, params)
-        state_final, state_vid = jax.lax.scan(step, state_init, split(rng, int(args.rollout_steps*1.5)))
-        vid = jax.vmap(partial(sim_human.render_state, params=params, img_size=256))(state_vid) # T H W C
-        return vid
 
     all_params = np.arange(args.start, args.end)
     data = []

@@ -29,6 +29,7 @@ group = parser.add_argument_group("model")
 group.add_argument("--grid_size", type=int, default=128)
 group.add_argument("--phenotype_size", type=int, default=64)
 group.add_argument("--rollout_steps", type=int, default=256)
+group.add_argument("--start_pattern", type=str, default="5N7KKM")
 
 group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
@@ -40,7 +41,6 @@ group.add_argument("--n_iters", type=int, default=10000)
 group.add_argument("--sigma1", type=float, default=0.1)
 group.add_argument("--sigma2", type=float, default=0.)
 
-group.add_argument("--start_pattern", type=str, default="5N7KKM")
 
 def parse_args(*args, **kwargs):
     args = parser.parse_args(*args, **kwargs)
