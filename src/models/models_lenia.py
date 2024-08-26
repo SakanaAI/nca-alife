@@ -5,16 +5,15 @@ import jax.numpy as jnp
 from einops import rearrange, reduce, repeat
 from jax.random import split
 
-from lenia import ConfigLenia
-from lenia import Lenia as OriginalLenia
+from .lenia import ConfigLenia
+from .lenia import Lenia as OriginalLenia
 
 
 def inv_sigmoid(x):
     return jnp.log(x) - jnp.log1p(-x)
 
 class Lenia():
-    def __init__(self, grid_size=128, center_phenotype=True, phenotype_size=48,
-                 start_pattern="5N7KKM"):
+    def __init__(self, grid_size=128, center_phenotype=True, phenotype_size=48, start_pattern="5N7KKM"):
         self.grid_size = grid_size
         self.center_phenotype = center_phenotype
         self.phenotype_size = phenotype_size
@@ -44,31 +43,3 @@ class Lenia():
         if img_size is not None:
             img = jax.image.resize(img, (img_size, img_size, 3), method='nearest')
         return img
-
-if __name__ == "__main__":
-    rng = jax.random.PRNGKey(0)
-    ml = MyLenia()
-
-    params = ml.default_params(rng)
-
-    def step(state, _rng):
-        next_state = ml.step_state(_rng, state, params)
-        return next_state, state
-    state_init = ml.init_state(rng, params)
-    state_final, state_vid = jax.lax.scan(step, state_init, split(rng, 512))
-
-    from functools import partial
-
-    import matplotlib.pyplot as plt
-    vid = jax.vmap(partial(ml.render_state, params=params, img_size=224))(state_vid) # T H W C
-
-    img = vid[-1]
-    print(img.shape)
-
-    plt.imshow(img)
-    plt.savefig("./temp/lenia.png")
-    plt.close()
-
-
-
-    

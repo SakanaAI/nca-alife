@@ -66,32 +66,3 @@ class DNCA():
             img = jax.image.resize(img, (img_size, img_size, 3), method='nearest')
         return img
 
-
-if __name__ == "__main__":
-    rng = jax.random.PRNGKey(0)
-
-    dnca = DNCA(d_state=4, n_groups=2)
-    params = dnca.default_params(rng)
-
-    state = dnca.init_state(rng, params)
-    # print(state.shape)
-    # print(state[:4, :4])
-
-    print(state.shape)
-    state, _ = dnca.step_state(rng, state, params)
-    print(state.shape)
-
-
-    img = dnca.render_state(state, params)
-    print(img.shape, img.min(), img.max(), img.dtype)
-
-    import matplotlib.pyplot as plt
-    plt.imshow(img)
-    plt.savefig("./temp/dnca.png")
-    plt.close()
-
-
-
-
-
-

@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_cppn import CPPN
+from models.models_boids import Boids
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -26,11 +26,10 @@ group.add_argument("--seed", type=int, default=0)
 group.add_argument("--save_dir", type=str, default=None)
 
 group = parser.add_argument_group("model")
-group.add_argument("--grid_size", type=int, default=128)
-group.add_argument("--d_dim", type=int, default=8)
-group.add_argument("--n_layers", type=int, default=4)
-group.add_argument("--activation", type=str, default="tanh")
-group.add_argument("--inputs", type=str, default="xyr")
+group.add_argument("--n_boids", type=int, default=64)
+group.add_argument("--n_nbrs", type=int, default=16)
+group.add_argument("--visual_range", type=float, default=0.1)
+group.add_argument("--rollout_steps", type=int, default=1000)
 
 group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
@@ -38,7 +37,7 @@ group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # 
 group = parser.add_argument_group("optimization")
 group.add_argument("--k_nbrs", type=int, default=1)
 group.add_argument("--bs", type=int, default=32)
-group.add_argument("--pop_size", type=int, default=8192)
+group.add_argument("--pop_size", type=int, default=1024)
 group.add_argument("--n_iters", type=int, default=10000)
 group.add_argument("--sigma1", type=float, default=0.1)
 group.add_argument("--sigma2", type=float, default=0.)
@@ -52,7 +51,7 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    sim = CPPN(grid_size=args.grid_size, d_dim=args.d_dim, n_layers=args.n_layers, activation=args.activation, inputs=args.inputs)
+    sim = Boids(n_boids=args.n_boids, n_nbrs=args.n_nbrs, visual_range=args.visual_range, dt=0.01)
     clip_model = MyFlaxCLIP(args.clip_model)
 
     rng = jax.random.PRNGKey(args.seed)
@@ -60,9 +59,16 @@ def main(args):
 
     @jax.jit
     def unroll_params(rng, params):
-        img = sim.render(params, img_size=224)
-        z_img_final = clip_model.embed_img(img) # D
-        return dict(img=img, z_img_final=z_img_final)
+        def step(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, state
+        state_init = sim.init_state(rng, params)
+        state_final, state_vid = jax.lax.scan(step, state_init, split(rng, args.rollout_steps))
+
+        img_init = sim.render_state(state_init, params=params, img_size=224)
+        img_final = sim.render_state(state_final, params=params, img_size=224)
+        z_img_final = clip_model.embed_img(img_final) # D
+        return dict(img_init=img_init, img_final=img_final, z_img_final=z_img_final)
 
     rng, _rng = split(rng)
     pop = []
@@ -125,7 +131,8 @@ def main(args):
             util.save_pkl(args.save_dir, "data", data_save)
 
             pop_save = jax.tree.map(lambda x: x, pop)
-            pop_save['img'] = (pop_save['img']*255).astype(jnp.uint8)
+            pop_save['img_init'] = (pop_save['img_init']*255).astype(jnp.uint8)
+            pop_save['img_final'] = (pop_save['img_final']*255).astype(jnp.uint8)
             pop_save = jax.tree.map(lambda x: np.array(x), pop_save)
             util.save_pkl(args.save_dir, "pop", pop_save)
             
@@ -134,11 +141,12 @@ def main(args):
             plt.plot(data_save['loss'], color='green', label='loss')
             plt.axhline(data_save['loss'][0], color='r', linestyle='dashed', label='initial loss')
             plt.legend()
-            img = pop_save['img'] # pop_size H W C
+            img = pop_save['img_final'] # pop_size H W C
             img = jnp.pad(img, ((0, 0), (1, 1), (1, 1), (0, 0)), mode='constant', constant_values=.5)
-            plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//64), :, :, :], "(R C) H W D -> (R H) (C W) D", R=4))
+            plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
             plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
             plt.close()
+    print(pop['params'].mean().item())
 
 if __name__ == '__main__':
     main(parse_args())

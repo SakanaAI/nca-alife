@@ -36,6 +36,7 @@ group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
 
 group = parser.add_argument_group("optimization")
+group.add_argument("--k_nbrs", type=int, default=1)
 group.add_argument("--bs", type=int, default=16)
 group.add_argument("--pop_size", type=int, default=512)
 group.add_argument("--n_iters", type=int, default=3000)
@@ -104,7 +105,7 @@ def main(args):
         def kill_least(carry, _):
             D, to_kill, i = carry
 
-            tki = D.min(axis=-1).argmin()
+            tki = D.sort(axis=-1)[:, :args.k_nbrs].mean(axis=-1).argmin()
             D = D.at[:, tki].set(jnp.inf)
             D = D.at[tki, :].set(jnp.inf)
             to_kill = to_kill.at[i].set(tki)
@@ -143,7 +144,8 @@ def main(args):
             plt.axhline(data_save['loss'][0], color='r', linestyle='dashed', label='initial loss')
             plt.legend()
             img = pop_save['img_final'] # pop_size H W C
-            plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=4))
+            img = jnp.pad(img, ((0, 0), (1, 1), (1, 1), (0, 0)), mode='constant', constant_values=.5)
+            plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
             plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
             plt.close()
 

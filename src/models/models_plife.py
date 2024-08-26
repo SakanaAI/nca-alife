@@ -14,8 +14,9 @@ class ParticleLife():
     def __init__(self, n_particles=5000, n_colors=6, n_dims=2, x_dist_bins=7,
                  beta=0.3, alpha=0., mass=0.1,
                  dt=0.002, half_life=0.04, rmax=0.1,
-                 render_radius=5e-3, sharpness=20.,
-                 search_space="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist+color+render_radius"):
+                 render_radius=1e-2, sharpness=20.,
+                 search_space="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist+color+render_radius",
+                 color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='black'):
         self.n_particles = n_particles
         self.n_colors = n_colors
         self.n_dims = n_dims
@@ -23,6 +24,9 @@ class ParticleLife():
         self.x_dist_bins = x_dist_bins
 
         self.search_space = search_space.split('+')
+        self.color_palette = color_palette
+        self.background_color = background_color
+
         self.fixed_params = dict(
             beta=jnp.full((self.n_colors, ), beta),
             alpha=jnp.full((self.n_colors, self.n_colors), alpha),
@@ -32,8 +36,6 @@ class ParticleLife():
             rmax=jnp.full((self.n_colors, ), rmax),
             c_dist=jnp.zeros((self.n_colors, )),
             x_dist=jnp.zeros((self.n_colors, self.x_dist_bins, self.x_dist_bins)),
-            render_radius=render_radius,
-            sharpness=sharpness,
         )
 
     def _get_param(self, params, name):
@@ -54,10 +56,6 @@ class ParticleLife():
                 return params[name]
             elif name=="x_dist":
                 return params[name]
-            elif name=="render_radius":
-                return 10.**(jax.nn.sigmoid(params[name])*1.5-3.) # 1e-3 to 3e-2
-            elif name=="sharpness":
-                return jax.nn.sigmoid(params[name])*40 # 0 to 40
         else:
             return self.fixed_params[name]
     
@@ -99,12 +97,6 @@ class ParticleLife():
         if "x_dist" in self.search_space:
             rng, _rng = split(rng)
             params['x_dist'] = jax.random.normal(_rng, (self.n_colors, self.x_dist_bins, self.x_dist_bins))
-        if "render_radius" in self.search_space:
-            rng, _rng = split(rng)
-            params['render_radius'] = jax.random.normal(_rng, ())
-        if "sharpness" in self.search_space:
-            rng, _rng = split(rng)
-            params['sharpness'] = jax.random.normal(_rng, ())
         return params
         
     def init_state(self, rng, params):
@@ -158,14 +150,13 @@ class ParticleLife():
         x = x%1. # circular boundary
         return dict(c=c, x=x, v=v)
     
-    def render_state(self, state, params, img_size=256,
-                           color_palette='ff0000-00ff00-0000ff-ffff00-ff00ff-00ffff-ffffff-8f5d00', background_color='black'):
-        color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in color_palette.split('-')])
-        background_color = jnp.array(mcolors.to_rgb(background_color)).astype(jnp.float32)
+    def render_state(self, state, params, img_size=256):
+        color_palette = jnp.array([mcolors.to_rgb(f"#{a}") for a in self.color_palette.split('-')])
+        background_color = jnp.array(mcolors.to_rgb(self.background_color)).astype(jnp.float32)
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
 
-        render_radius = self._get_param(params, 'render_radius')
-        sharpness = self._get_param(params, 'sharpness') / render_radius
+        render_radius = self.render_radius
+        sharpness = self.sharpness
 
         x, v, c = state['x'], state['v'], state['c']
         mass = self._get_param(params, 'mass')[c]
