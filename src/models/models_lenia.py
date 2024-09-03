@@ -26,10 +26,12 @@ class Lenia():
         self.base_params = inv_sigmoid(self.init_genotype.clip(1e-6, 1.-1e-6))
 
     def default_params(self, rng):
-        return jax.random.normal(rng, self.base_params.shape)
+        # return jax.random.normal(rng, self.base_params.shape)
+        return jnp.zeros(self.base_params.shape)
     
     def init_state(self, rng, params):
-        carry = self.lenia.express_genotype(self.init_carry, jax.nn.sigmoid(params+self.base_params))
+        params = jax.nn.sigmoid(params+self.base_params)
+        carry = self.lenia.express_genotype(self.init_carry, params)
         state = dict(carry=carry, img=jnp.zeros((self.phenotype_size, self.phenotype_size, 3)))
         # return state
         return self.step_state(rng, state, params) # so init img is not zeros lol

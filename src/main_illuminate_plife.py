@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_plife import ParticleLife
+from models.models_plife import ParticleLife
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -28,9 +28,11 @@ group.add_argument("--save_dir", type=str, default=None)
 group = parser.add_argument_group("model")
 group.add_argument("--n_particles", type=int, default=5000)
 group.add_argument("--n_colors", type=int, default=6)
-group.add_argument("--search_space", type=str, default="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist")
-group.add_argument("--render_radius", type=float, default=7e-3)
-group.add_argument("--rollout_steps", type=int, default=1024)
+group.add_argument("--search_space", type=str, default="beta+alpha")
+# group.add_argument("--search_space", type=str, default="beta+alpha+mass+dt+half_life+rmax+c_dist+x_dist")
+group.add_argument("--render_radius", type=float, default=1e-2)
+group.add_argument("--dt", type=float, default=2e-3)
+group.add_argument("--rollout_steps", type=int, default=1000)
 
 group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
@@ -52,7 +54,7 @@ def parse_args(*args, **kwargs):
 
 def main(args):
     sim = ParticleLife(n_particles=args.n_particles, n_colors=args.n_colors,
-                       search_space=args.search_space, render_radius=args.render_radius)  
+                       search_space=args.search_space, dt=args.dt, render_radius=args.render_radius)  
     clip_model = MyFlaxCLIP(args.clip_model)
 
     rng = jax.random.PRNGKey(args.seed)
@@ -69,7 +71,6 @@ def main(args):
         # img_init = sim.render_state(state_init, params=params, img_size=224)
         img_final = sim.render_state(state_final, params=params, img_size=224)
         z_img_final = clip_model.embed_img(img_final) # D
-        # return dict(img_init=img_init, img_final=img_final, z_img_final=z_img_final)
         return dict(img_final=img_final, z_img_final=z_img_final)
 
     rng, _rng = split(rng)

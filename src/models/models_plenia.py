@@ -73,23 +73,34 @@ def show_lenia(params, points, extent, w=400, show_UG=False, show_cmap=True):
 
 
 class ParticleLenia():
-    def __init__(self, n_particles=256,):
+    def __init__(self, n_particles=200, dt=0.1):
         self.n_particles = n_particles
-        self.dt = 0.1
+        self.dt = dt
 
     def default_params(self, rng):
-        params = Params(mu_k=4.0, sigma_k=1.0, w_k=0.022, mu_g=0.6, sigma_g=0.15, c_rep=1.0)
-        return params
+        # params = Params(mu_k=4.0, sigma_k=1.0, w_k=0.022, mu_g=0.6, sigma_g=0.15, c_rep=1.0)
+        return jnp.zeros((6, ))
+      
+    def _get_real_params(self, params):
+        mu_k = jnp.exp(params[0]+jnp.log(4.0))
+        sigma_k = jnp.exp(params[1]+jnp.log(1.0))
+        w_k = jnp.exp(params[2]+jnp.log(0.022))
+        mu_g = jnp.exp(params[3]+jnp.log(0.6))
+        sigma_g = jnp.exp(params[4]+jnp.log(0.15))
+        c_rep = jnp.exp(params[5]+jnp.log(1.0))
+        return Params(mu_k=mu_k, sigma_k=sigma_k, w_k=w_k, mu_g=mu_g, sigma_g=sigma_g, c_rep=c_rep)
     
     def init_state(self, rng, params):
         state = (jax.random.uniform(rng, [self.n_particles, 2])-0.5)*12.0
         return state
     
     def step_state(self, rng, state, params):
+        params = self._get_real_params(params)
         state = state + self.dt * motion_f(params, state)
         return state
     
     def render_state(self, state, params, img_size=None):
+        params = self._get_real_params(params)
         extent = jp.abs(state).max()*1.2
         img = show_lenia(params, state, extent=extent, w=img_size, show_UG=True, show_cmap=False)
         img = img[:, :img_size, :]

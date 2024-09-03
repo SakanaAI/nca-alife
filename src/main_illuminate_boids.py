@@ -26,9 +26,15 @@ group.add_argument("--seed", type=int, default=0)
 group.add_argument("--save_dir", type=str, default=None)
 
 group = parser.add_argument_group("model")
-group.add_argument("--n_boids", type=int, default=64)
+group.add_argument("--n_boids", type=int, default=128)
 group.add_argument("--n_nbrs", type=int, default=16)
 group.add_argument("--visual_range", type=float, default=0.1)
+group.add_argument("--speed", type=float, default=0.5)
+group.add_argument("--dt", type=float, default=0.01)
+
+group.add_argument("--bird_render_size", type=float, default=0.015)
+group.add_argument("--bird_render_sharpness", type=float, default=40.)
+
 group.add_argument("--rollout_steps", type=int, default=1000)
 
 group = parser.add_argument_group("data")
@@ -51,7 +57,8 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    sim = Boids(n_boids=args.n_boids, n_nbrs=args.n_nbrs, visual_range=args.visual_range, dt=0.01)
+    sim = Boids(n_boids=args.n_boids, n_nbrs=args.n_nbrs, visual_range=args.visual_range, speed=args.speed,
+                controller='network', dt=args.dt, bird_render_size=args.bird_render_size, bird_render_sharpness=args.bird_render_sharpness)
     clip_model = MyFlaxCLIP(args.clip_model)
 
     rng = jax.random.PRNGKey(args.seed)
@@ -146,7 +153,6 @@ def main(args):
             plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
             plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
             plt.close()
-    print(pop['params'].mean().item())
 
 if __name__ == '__main__':
     main(parse_args())

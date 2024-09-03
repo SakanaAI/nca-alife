@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_nca import NCA
+from models.models_nca import NCA
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -27,8 +27,10 @@ group.add_argument("--save_dir", type=str, default=None)
 
 group = parser.add_argument_group("model")
 group.add_argument("--grid_size", type=int, default=128)
-group.add_argument("--d_state", type=int, default=1)
-group.add_argument("--rollout_steps", type=int, default=1024)
+group.add_argument("--d_state", type=int, default=3)
+group.add_argument("--p_drop", type=float, default=0.5)
+group.add_argument("--dt", type=float, default=0.1)
+group.add_argument("--rollout_steps", type=int, default=1000)
 
 group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
@@ -50,7 +52,7 @@ def parse_args(*args, **kwargs):
     return args
 
 def main(args):
-    sim = NCA(grid_size=args.grid_size, d_state=args.d_state, p_drop=0.0)
+    sim = NCA(grid_size=args.grid_size, d_state=args.d_state, p_drop=args.p_drop, dt=args.dt)
     clip_model = MyFlaxCLIP(args.clip_model)
 
     rng = jax.random.PRNGKey(args.seed)

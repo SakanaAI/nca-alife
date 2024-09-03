@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import util
 from clip_jax import MyFlaxCLIP
-from models_gol import GameOfLife
+from models.models_gol import GameOfLife
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -62,37 +62,50 @@ def main(args):
         sr = args.rollout_steps//args.n_rollout_imgs
         idx_downsample = jnp.arange(0, args.rollout_steps, sr)
         state_vid = jax.tree.map(lambda x: x[idx_downsample], state_vid) # downsample
+        print('state_vid', state_vid.shape)
         vid = jax.vmap(partial(sim.render_state, params=params, img_size=224))(state_vid) # T H W C
+        print('vid', vid.shape)
         z_img = jax.vmap(clip_model.embed_img)(vid) # T D
+        print('z_img', z_img.shape)
 
+        # --------- CLIP Novelty ---------
         scores_novelty = (z_img @ z_img.T) # T T
         scores_novelty = jnp.tril(scores_novelty, k=-1)
-        loss_novelty_clip = scores_novelty.max(axis=-1) # T
+        loss_novelty = scores_novelty.max(axis=-1) # T
+        print('loss_novelty', loss_novelty.shape)
 
-        img_novelty = jnp.abs(state_vid[None, :] - state_vid[:, None]).mean(axis=(-1, -2)) # T T
-        img_novelty = jnp.tril(img_novelty, k=-1)
-        loss_novelty_engineered = img_novelty.max(axis=-1) # T
-        return dict(loss_novelty_clip=loss_novelty_clip, loss_novelty_engineered=loss_novelty_engineered)
+        # --------- Manual Novelty ---------
+        scores_novelty = jnp.abs(state_vid[None, :] - state_vid[:, None]).mean(axis=(-1, -2)) # T T
+        scores_novelty = jnp.tril(scores_novelty, k=-1)
+        loss_novelty_manual = scores_novelty.max(axis=-1) # T
+        print('loss_novelty_manual', loss_novelty_manual.shape)
+        return dict(loss_novelty=loss_novelty, loss_novelty_manual=loss_novelty_manual, z_img_final=z_img[-1])
 
     @jax.jit
     def do_iter(params, rng):
         calc_loss_v = jax.vmap(calc_loss, in_axes=(0, None))
         data = calc_loss_v(split(rng, args.bs), params)
-        data = jax.tree.map(lambda x: x.mean(axis=0), data)  # mean over bs
+        print('data', jax.tree.map(lambda x: x.shape, data))
+
+        data = dict(loss_novelty=data['loss_novelty'].mean(axis=0),
+                    loss_novelty_manual=data['loss_novelty_manual'].mean(axis=0),
+                    z_img_final=data['z_img_final'][args.bs//2])
+        print('data', jax.tree.map(lambda x: x.shape, data))
         return data
 
+    args.n_iters = args.end - args.start
     all_params = np.arange(args.start, args.end)
     data = []
-    pbar = tqdm(range(len(all_params)))
+    pbar = tqdm(range(args.n_iters))
     for i_iter in pbar:
         rng, _rng = split(rng)
         di = do_iter(all_params[i_iter], _rng)
         data.append(di)
 
-    if args.save_dir is not None:
-        data_save = jax.tree.map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
-        util.save_pkl(args.save_dir, "data", data_save)
-        util.save_pkl(args.save_dir, "all_params", all_params)
+        if args.save_dir is not None and (i_iter % (args.n_iters//10)==0 or i_iter==args.n_iters-1):
+            data_save = jax.tree.map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
+            util.save_pkl(args.save_dir, "data", data_save)
+            util.save_pkl(args.save_dir, "all_params", all_params)
 
 if __name__ == '__main__':
     main(parse_args())

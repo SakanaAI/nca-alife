@@ -11,8 +11,6 @@ class NCANetwork(nn.Module):
     @nn.compact
     def __call__(self, x):
         x = jnp.pad(x, pad_width=1, mode='wrap')
-        # x = nn.Conv(features=48, kernel_size=(3, 3), padding="VALID")(x)
-        # x = nn.Conv(features=128, kernel_size=(1, 1))(x)
         x = nn.Conv(features=4, kernel_size=(3, 3), padding="VALID")(x)
         x = nn.Conv(features=16, kernel_size=(1, 1))(x)
         x = nn.relu(x)
@@ -21,7 +19,7 @@ class NCANetwork(nn.Module):
 
 
 class NCA():
-    def __init__(self, grid_size=64, d_state=16, p_drop=0.0):
+    def __init__(self, grid_size=64, d_state=16, p_drop=0.0, dt=0.01):
         self.grid_size = grid_size
         self.d_state = d_state
         self.nca = NCANetwork(d_state=d_state)

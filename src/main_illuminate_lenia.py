@@ -28,7 +28,7 @@ group.add_argument("--save_dir", type=str, default=None)
 group = parser.add_argument_group("model")
 group.add_argument("--grid_size", type=int, default=128)
 group.add_argument("--phenotype_size", type=int, default=64)
-group.add_argument("--rollout_steps", type=int, default=256)
+group.add_argument("--rollout_steps", type=int, default=1000)
 group.add_argument("--start_pattern", type=str, default="5N7KKM")
 
 group = parser.add_argument_group("data")
@@ -52,7 +52,7 @@ def parse_args(*args, **kwargs):
 
 def main(args):
     sim = Lenia(grid_size=args.grid_size, center_phenotype=True, phenotype_size=args.phenotype_size, start_pattern=args.start_pattern)
-    sim_human = Lenia(grid_size=args.grid_size, center_phenotype=False, phenotype_size=args.phenotype_size, start_pattern=args.start_pattern)
+    # sim_human = Lenia(grid_size=args.grid_size, center_phenotype=False, phenotype_size=args.phenotype_size, start_pattern=args.start_pattern)
     clip_model = MyFlaxCLIP(args.clip_model)
 
     rng = jax.random.PRNGKey(args.seed)
@@ -147,7 +147,6 @@ def main(args):
             plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
             plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
             plt.close()
-    print(pop['params'].mean().item())
 
 if __name__ == '__main__':
     main(parse_args())

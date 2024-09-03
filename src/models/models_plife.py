@@ -27,6 +27,9 @@ class ParticleLife():
         self.color_palette = color_palette
         self.background_color = background_color
 
+        self.render_radius = render_radius
+        self.sharpness = sharpness
+
         self.fixed_params = dict(
             beta=jnp.full((self.n_colors, ), beta),
             alpha=jnp.full((self.n_colors, self.n_colors), alpha),
@@ -41,9 +44,9 @@ class ParticleLife():
     def _get_param(self, params, name):
         if name in self.search_space:
             if name=="beta":
-                return jax.nn.sigmoid(params[name])
+                return jax.nn.sigmoid(params[name]) # 0. to 1.
             elif name=="alpha":
-                return jax.nn.sigmoid(params[name])*3.-1.5
+                return jax.nn.sigmoid(params[name]+0.)*3.-1.5
             elif name=="mass":
                 return 10.**(jax.nn.sigmoid(params[name])*1.5-1.5) # .03 to 1
             elif name=="dt":
@@ -156,7 +159,7 @@ class ParticleLife():
         img = repeat(background_color, "C -> H W C", H=img_size, W=img_size)
 
         render_radius = self.render_radius
-        sharpness = self.sharpness
+        sharpness = self.sharpness / render_radius
 
         x, v, c = state['x'], state['v'], state['c']
         mass = self._get_param(params, 'mass')[c]
