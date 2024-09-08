@@ -4,29 +4,29 @@ a diverse ecosystem of cells moving around
 top down view of a colony of diverse cells
 a network of neurons
 a multi-celled organism
-a virus
-a fungal colony
+a virus and fungal colony
 an artificial life organism
 a red organism
 a green organism
 a blue organism
-concentric circles
-a snake
-a caterpillar
-a colorful striped snake
-a colorful striped caterpillar
-a starfish
+a self-replicating pattern
+swarm intelligence
 a school of fish
-a flock of birds
+the flocking behavior of birds
+a trail of ants
+a fibonacci spiral in nature
+concentric circles
+a starfish
+a colorful striped snake
+a caterpillar
+a butterfly
 a coral reef
-a tree
+a tree with roots
 a beautiful flower
 a snowflake
 a fractal pattern
-a spaceship
+a complex maze
 a pepperoni pizza
-a butterfly
-a maze
 the sun
 an eye
 a galaxy
