@@ -125,8 +125,8 @@ def main(args):
             params = param_reshaper.reshape_single(es_state.best_member)
             vid = inference_video(rng, params)
             vid = np.array((vid*255).astype(jnp.uint8))
-            util.save_pkl(args.save_dir, "vid", vid)
-            # imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
+            # util.save_pkl(args.save_dir, "vid", vid)
+            imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
 
             plt.figure(figsize=(10, 5))
             plt.subplot(211)
