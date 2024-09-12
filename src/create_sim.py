@@ -12,7 +12,7 @@ from models.models_plife import ParticleLife
 
 import evosax
 
-class FlattenParameters():
+class FlattenSimulationParameters():
     def __init__(self, sim):
         self.sim = sim
         self.param_reshaper = evosax.ParameterReshaper(self.sim.default_params(jax.random.PRNGKey(0)))
@@ -42,7 +42,7 @@ def create_sim(sim_name):
     elif sim_name.startswith('lenia'):
         _, clip = sim_name.split('_')
         sim = Lenia(grid_size=128, center_phenotype=True, phenotype_size=64, start_pattern="5N7KKM", clip1=float(clip))
-        rollout_steps = 1000
+        rollout_steps = 256
     elif sim_name=='nca_d1':
         sim = NCA(grid_size=128, d_state=1, p_drop=0.5, dt=0.1)
     elif sim_name=='nca_d3':
@@ -76,7 +76,7 @@ def create_sim(sim_name):
 #         img = sim.render_state(state_final, params=params, img_size=img_size)
 #         return img
 
-def rollout_render_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='img', img_size=224):
+def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='img', img_size=224):
     def step(state, _rng):
         next_state = sim.step_state(_rng, state, params)
         return next_state, state
@@ -93,12 +93,11 @@ def rollout_render_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='i
         vid = jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
         return vid
 
-def rollout_render_clip_simulation(rng, params, sim, clip_model, rollout_steps, n_rollout_imgs=None):
-    vid = rollout_render_simulation(rng, params, sim, rollout_steps, n_rollout_imgs, img_size=224)
+def rollout_and_embed_simulation(rng, params, sim, clip_model, rollout_steps, n_rollout_imgs='img'):
+    vid = rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs, img_size=224)
     if clip_model is None:
-        return dict(vid=vid, z=None)
-
-    if n_rollout_imgs is None:
+        z = None
+    elif n_rollout_imgs == 'img':
         z = clip_model.embed_img(vid)
     else:
         z = jax.vmap(clip_model.embed_img)(vid)

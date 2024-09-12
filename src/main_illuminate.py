@@ -31,7 +31,7 @@ group = parser.add_argument_group("data")
 group.add_argument("--clip_model", type=str, default="clip-vit-base-patch32") # clip-vit-base-patch32 or clip-vit-large-patch14
 
 group = parser.add_argument_group("optimization")
-group.add_argument("--k_nbrs", type=int, default=1)
+group.add_argument("--k_nbrs", type=int, default=2)
 group.add_argument("--bs", type=int, default=32)
 group.add_argument("--pop_size", type=int, default=1024)
 group.add_argument("--n_iters", type=int, default=10000)
