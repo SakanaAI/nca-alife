@@ -50,3 +50,33 @@ class GameOfLife():
         if img_size is not None:
             img = jax.image.resize(img, (img_size, img_size, 3), method='nearest')
         return img
+
+class GameOfLifeInit():
+    def __init__(self, grid_size=64):
+        self.grid_size = grid_size
+
+        self.params_max = 2**18 - 1
+        self.params_gol = 6152
+
+    def default_params(self, rng):
+        params_dyn = int2binary(self.params_gol)
+        params_init = jax.random.uniform(rng, (self.grid_size, self.grid_size), minval=0, maxval=1)
+        params_init = jnp.floor(params_init+0.4).astype(int)
+        return dict(params_dyn=params_dyn, params_init=params_init)
+    
+    def init_state(self, rng, params):
+        return params['params_init']
+    
+    def step_state(self, rng, state, params):
+        params = params['params_dyn']
+        state_f = state.astype(float)
+        n_neighbors = conv2d_3x3_sum(state_f) - state_f
+        update_idx = state_f * 9 + n_neighbors
+        next_state = int2binary(params)[update_idx.astype(int)]
+        return next_state
+    
+    def render_state(self, state, params, img_size=None):
+        img = repeat(state.astype(float), "H W -> H W 3")
+        if img_size is not None:
+            img = jax.image.resize(img, (img_size, img_size, 3), method='nearest')
+        return img

@@ -10,6 +10,29 @@ from models.models_nca import NCA
 from models.models_plenia import ParticleLenia
 from models.models_plife import ParticleLife
 
+import evosax
+
+class FlattenParameters():
+    def __init__(self, sim):
+        self.sim = sim
+        self.param_reshaper = evosax.ParameterReshaper(self.sim.default_params(jax.random.PRNGKey(0)))
+
+    def default_params(self, rng):
+        params = self.sim.default_params(rng)
+        return self.param_reshaper.flatten_single(params)
+    
+    def init_state(self, rng, params):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.init_state(rng, params)
+    
+    def step_state(self, rng, state, params):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.step_state(rng, state, params)
+    
+    def render_state(self, state, params, img_size=None):
+        params = self.param_reshaper.reshape_single(params)
+        return self.sim.render_state(state, params, img_size)
+
 def create_sim(sim_name):
     rollout_steps = 1000
     if sim_name=='boids':
@@ -19,7 +42,7 @@ def create_sim(sim_name):
     elif sim_name.startswith('lenia'):
         _, clip = sim_name.split('_')
         sim = Lenia(grid_size=128, center_phenotype=True, phenotype_size=64, start_pattern="5N7KKM", clip1=float(clip))
-        rollout_steps = 256
+        rollout_steps = 1000
     elif sim_name=='nca_d1':
         sim = NCA(grid_size=128, d_state=1, p_drop=0.5, dt=0.1)
     elif sim_name=='nca_d3':
