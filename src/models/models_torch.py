@@ -79,6 +79,21 @@ def sample_init_state(height=256, width=256, d_state=16, bs=1, init_state="randn
         state[:, :, start::spacing, start::spacing]  = 1.
     elif init_state == "randn":
         state = torch.randn((bs, d_state, height, width), device=device, dtype=dtype)
+    elif init_state.startswith("circle"):
+        state = torch.zeros((bs, d_state, height, width), device=device, dtype=dtype) - 1.
+        center, radius = (height//2, width//2), height//8
+        y, x = torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device), indexing='ij')
+        distance = torch.sqrt((x - center[1])**2 + (y - center[0])**2)
+        circle_mask = distance <= radius
+        for i in range(bs):
+            if init_state.endswith("_rand"):
+                j = torch.randint(0, d_state, ())
+                state[i, j][circle_mask] = 1.0
+            else:
+                state[i, 0][circle_mask] = 1.0
+    elif init_state == "square":
+        state = torch.zeros((bs, d_state, height, width), device=device, dtype=dtype) - 1.
+        state[:, 0, height//8*3:height//8*5, width//8*3:width//8*5] = 1.
     else:
         raise NotImplementedError
 

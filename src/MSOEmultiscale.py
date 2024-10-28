@@ -186,7 +186,7 @@ import torchvision.transforms.functional as TF
 class MyOpticalFlowNet():
     def __init__(self, device, dtype):
         self.model = MSOEmultiscale()
-        states_dict = torch.load(f'/home/akarshkumar0101/nca-alife-data/two_stream_dynamic_model.pth')
+        states_dict = torch.load(f'/home/akarsh_sakana_ai/nca-alife-data/two_stream_dynamic_model.pth')
         self.model.load_state_dict(states_dict)
         self.model = self.model.eval()
         for p in self.model.parameters():

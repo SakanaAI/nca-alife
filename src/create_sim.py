@@ -16,6 +16,7 @@ class FlattenSimulationParameters():
     def __init__(self, sim):
         self.sim = sim
         self.param_reshaper = evosax.ParameterReshaper(self.sim.default_params(jax.random.PRNGKey(0)))
+        self.n_params = self.param_reshaper.total_params
 
     def default_params(self, rng):
         params = self.sim.default_params(rng)
@@ -37,24 +38,27 @@ def create_sim(sim_name):
     rollout_steps = 1000
     if sim_name=='boids':
         sim = Boids(n_boids=128, n_nbrs=16, visual_range=0.1, speed=0.5, controller='network', dt=0.01, bird_render_size=0.015, bird_render_sharpness=40.)
-    elif sim_name=='dnca':
-        sim = DNCA(grid_size=128, d_state=8, n_groups=1, identity_bias=0., temperature=1e-3)
     elif sim_name.startswith('lenia'):
         _, clip = sim_name.split('_')
         sim = Lenia(grid_size=128, center_phenotype=True, phenotype_size=64, start_pattern="5N7KKM", clip1=float(clip))
         rollout_steps = 256
+    elif sim_name=='plife_a':
+        sim = ParticleLife(n_particles=5000, n_colors=6, search_space="alpha", dt=2e-3, render_radius=1e-2)  
+    elif sim_name=='plife_ba':
+        sim = ParticleLife(n_particles=5000, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
+    elif sim_name.startswith('plife_ba_n='):
+        n = int(sim_name.split('=')[-1])
+        sim = ParticleLife(n_particles=n, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
+    elif sim_name=='plife_ba_c3':
+        sim = ParticleLife(n_particles=5000, n_colors=3, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
+    elif sim_name=='dnca':
+        sim = DNCA(grid_size=128, d_state=8, n_groups=1, identity_bias=0., temperature=1e-3)
     elif sim_name=='nca_d1':
         sim = NCA(grid_size=128, d_state=1, p_drop=0.5, dt=0.1)
     elif sim_name=='nca_d3':
         sim = NCA(grid_size=128, d_state=3, p_drop=0.5, dt=0.1)
     elif sim_name=='plenia':
         sim = ParticleLenia(n_particles=200, dt=0.1)
-    elif sim_name=='plife_a':
-        sim = ParticleLife(n_particles=5000, n_colors=6, search_space="alpha", dt=2e-3, render_radius=1e-2)  
-    elif sim_name=='plife_ba':
-        sim = ParticleLife(n_particles=5000, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
-    elif sim_name=='plife_ba_c3':
-        sim = ParticleLife(n_particles=5000, n_colors=3, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
     else:
         raise ValueError(f"Unknown simulation name: {sim_name}")
     sim.sim_name = sim_name
@@ -76,32 +80,60 @@ def create_sim(sim_name):
 #         img = sim.render_state(state_final, params=params, img_size=img_size)
 #         return img
 
-def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='img', img_size=224):
-    def step(state, _rng):
-        next_state = sim.step_state(_rng, state, params)
-        return next_state, state
+def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='final', img_size=224,
+                       return_state=False, chunk_ends=False):
     state_init = sim.init_state(rng, params)
-    state_final, state_vid = jax.lax.scan(step, state_init, split(rng, rollout_steps))
-    if n_rollout_imgs == 'img':
-        return sim.render_state(state_final, params=params, img_size=img_size)
-    elif n_rollout_imgs == 'vid':
-        return jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
+    if n_rollout_imgs == 'final' or n_rollout_imgs=='image' or n_rollout_imgs == 'img':
+        def step_fn(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, None
+        state_final, _ = jax.lax.scan(step_fn, state_init, split(rng, rollout_steps))
+        img = sim.render_state(state_final, params=params, img_size=img_size)
+        if return_state:
+            return dict(state_init=state_init, state_final=state_final, rgb=img)
+        else:
+            return dict(rgb=img)
+    elif n_rollout_imgs == 'video' or n_rollout_imgs == 'vid':
+        def step_fn(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, state
+        state_final, state_vid = jax.lax.scan(step_fn, state_init, split(rng, rollout_steps))
+        vid = jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
+        if return_state:
+            return dict(state_init=state_init, state_final=state_final, state_vid=state_vid, rgb=vid)
+        else:
+            return dict(rgb=vid)
     else:
-        sr = rollout_steps//n_rollout_imgs # sampling rate
-        idx_sample = jnp.arange(sr-1, rollout_steps, sr)
+        def step_fn(state, _rng):
+            next_state = sim.step_state(_rng, state, params)
+            return next_state, state
+        state_final, state_vid = jax.lax.scan(step_fn, state_init, split(rng, rollout_steps))
+        chunk_size = rollout_steps//n_rollout_imgs
+        if chunk_ends:
+            idx_sample = jnp.arange(chunk_size-1, rollout_steps, chunk_size)
+        else:
+            idx_sample = jnp.arange(0, rollout_steps, chunk_size)
         state_vid = jax.tree.map(lambda x: x[idx_sample], state_vid)
         vid = jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
-        return vid
 
-def rollout_and_embed_simulation(rng, params, sim, clip_model, rollout_steps, n_rollout_imgs='img'):
-    vid = rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs, img_size=224)
+        if return_state:
+            return dict(state_init=state_init, state_final=state_final, state_vid=state_vid, rgb=vid)
+        else:
+            return dict(rgb=vid)
+
+def rollout_and_embed_simulation(rng, params, sim, clip_model, rollout_steps, n_rollout_imgs='img',
+                                  return_state=False, chunk_ends=False):
+    data = rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs, img_size=224,
+                              return_state=return_state, chunk_ends=chunk_ends)
     if clip_model is None:
-        z = None
-    elif n_rollout_imgs == 'img':
-        z = clip_model.embed_img(vid)
+        return dict(**data, z=None)
+    elif n_rollout_imgs == 'final':
+        z = clip_model.embed_img(data['rgb'])
+        return dict(**data, z=z)
     else:
-        z = jax.vmap(clip_model.embed_img)(vid)
-    return dict(vid=vid, z=z)
+        z = jax.vmap(clip_model.embed_img)(data['rgb'])
+        return dict(**data, z=z)
+
 
 if __name__ == '__main__':
     from tqdm.auto import tqdm

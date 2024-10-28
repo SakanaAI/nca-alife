@@ -16,7 +16,7 @@ import util
 import argparse
 from collections import defaultdict
 
-from models_torch import NCA, sample_init_state
+from models.models_torch import NCA, sample_init_state
 from clip_torch import MyTorchCLIP
 from MSOEmultiscale import MyOpticalFlowNet
 
@@ -218,7 +218,7 @@ def main(args):
 
             util.save_pkl(args.save_dir, 'vid', vid)
             imageio.mimwrite(f'{args.save_dir}/vid.mp4', vid, fps=30, codec='libx264')
-            imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
+            # imageio.mimwrite(f'{args.save_dir}/vid.gif', vid, fps=30)
             
             util.save_pkl(args.save_dir, 'data', {k: torch.stack(v).cpu().numpy() for k, v in data.items()})
             torch.save(nca.state_dict(), f"{args.save_dir}/nca.pt")

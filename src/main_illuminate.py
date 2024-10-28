@@ -16,8 +16,8 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 import util
-from clip_jax import MyFlaxCLIP
-from create_sim import create_sim
+from clip_jax import MyFlaxCLIP, MyFlaxDinov2, MyFlaxPixels
+from create_sim import create_sim, rollout_and_embed_simulation, FlattenSimulationParameters
 
 parser = argparse.ArgumentParser()
 group = parser.add_argument_group("meta")
@@ -48,49 +48,43 @@ def parse_args(*args, **kwargs):
 
 def main(args):
     sim = create_sim(args.sim)
-    clip_model = MyFlaxCLIP(args.clip_model)
+    sim = FlattenSimulationParameters(sim)
 
+    if args.clip_model =='clip-vit-base-patch32':
+        clip_model = MyFlaxCLIP(args.clip_model)
+    elif args.clip_model == 'dinov2-base':
+        clip_model = MyFlaxDinov2(args.clip_model, features='pooler')
+    elif args.clip_model == 'pixels':
+        clip_model = MyFlaxPixels()
+    else:
+        raise ValueError(f"clip_model {args.clip_model} not recognized")
+
+    rollout_fn_ = partial(rollout_and_embed_simulation, sim=sim, clip_model=clip_model, rollout_steps=sim.sim.rollout_steps, n_rollout_imgs='final')
     rng = jax.random.PRNGKey(args.seed)
-    param_reshaper = evosax.ParameterReshaper(sim.default_params(rng))
 
-    @jax.jit
-    def unroll_params(rng, params):
-        def step(state, _rng):
-            next_state = sim.step_state(_rng, state, params)
-            return next_state, state
-        state_init = sim.init_state(rng, params)
-        state_final, state_vid = jax.lax.scan(step, state_init, split(rng, sim.rollout_steps))
-
-        img_init = sim.render_state(state_init, params=params, img_size=224)
-        img_final = sim.render_state(state_final, params=params, img_size=224)
-        z_img_final = clip_model.embed_img(img_final) # D
-        return dict(img_init=img_init, img_final=img_final, z_img_final=z_img_final)
+    rollout_fn = jax.jit(lambda rng, p: dict(params=p, **rollout_fn_(rng, p)))
 
     rng, _rng = split(rng)
-    pop = []
-    for i in tqdm(range(args.pop_size)):
-        params = jnp.zeros(param_reshaper.total_params)
-        rng, _rng = split(rng)
-        unroll_data = unroll_params(_rng, param_reshaper.reshape_single(params))
-        pop.append({"params": params, **unroll_data})
+    params_init = 0.*jax.random.normal(_rng, (args.pop_size, sim.n_params))
+    pop = [rollout_fn(_rng, p) for p in tqdm(params_init)]
     pop = jax.tree.map(lambda *x: jnp.stack(x, axis=0), *pop)
 
     @jax.jit
     def do_iter(pop, rng):
         rng, _rng = split(rng)
         idx_p1, idx_p2 = jax.random.randint(_rng, (2, args.bs), minval=0, maxval=args.pop_size)
-        parent1, parent2 = pop['params'][idx_p1], pop['params'][idx_p2]  # bs D
+        params_parent1, params_parent2 = pop['params'][idx_p1], pop['params'][idx_p2]  # bs D
         rng, _rng1, _rng2 = split(rng, 3)
-        noise1, noise2 = jax.random.normal(_rng1, (args.bs, param_reshaper.total_params)), jax.random.normal(_rng2, (args.bs, 1))
-        children = parent1 + args.sigma1*noise1 + args.sigma2*(parent2-parent1)*noise2
+        noise1, noise2 = jax.random.normal(_rng1, (args.bs, sim.n_params)), jax.random.normal(_rng2, (args.bs, sim.n_params))
+        params_children = params_parent1 + args.sigma1*noise1 + args.sigma2*(params_parent2-params_parent1)*noise2
 
         rng, _rng = split(rng)
-        unroll_data = jax.vmap(unroll_params)(split(_rng, args.bs), param_reshaper.reshape(children))
-        children = {"params": children, **unroll_data}
+        children = jax.vmap(rollout_fn)(split(_rng, args.bs), params_children)
 
         pop = jax.tree.map(lambda *x: jnp.concatenate(x, axis=0), *[pop, children])
 
-        X = pop['z_img_final'] # (pop_size+bs) D
+        X = pop['z'] # (pop_size+bs) D
+        print(X.shape)
         D = -X@X.T # (pop_size+bs) (pop_size+bs)
         D = D.at[jnp.arange(args.pop_size+args.bs), jnp.arange(args.pop_size+args.bs)].set(jnp.inf)
 
@@ -126,22 +120,19 @@ def main(args):
             data_save = jax.tree.map(lambda *x: np.array(jnp.stack(x, axis=0)), *data)
             util.save_pkl(args.save_dir, "data", data_save)
 
-            pop_save = jax.tree.map(lambda x: x, pop)
-            pop_save['img_init'] = (pop_save['img_init']*255).astype(jnp.uint8)
-            pop_save['img_final'] = (pop_save['img_final']*255).astype(jnp.uint8)
-            pop_save = jax.tree.map(lambda x: np.array(x), pop_save)
-            util.save_pkl(args.save_dir, "pop", pop_save)
+            print(jax.tree_map(lambda x: x.shape, pop))
+            util.save_pkl(args.save_dir, "pop", jax.tree.map(lambda x: np.array(x), pop))
             
-            plt.figure(figsize=(10, 5))
-            plt.subplot(211)
-            plt.plot(data_save['loss'], color='green', label='loss')
-            plt.axhline(data_save['loss'][0], color='r', linestyle='dashed', label='initial loss')
-            plt.legend()
-            img = pop_save['img_final'] # pop_size H W C
-            img = jnp.pad(img, ((0, 0), (1, 1), (1, 1), (0, 0)), mode='constant', constant_values=.5)
-            plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
-            plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
-            plt.close()
+            # plt.figure(figsize=(10, 5))
+            # plt.subplot(211)
+            # plt.plot(data_save['loss'], color='green', label='loss')
+            # plt.axhline(data_save['loss'][0], color='r', linestyle='dashed', label='initial loss')
+            # plt.legend()
+            # img = pop_save['img_final'] # pop_size H W C
+            # img = jnp.pad(img, ((0, 0), (1, 1), (1, 1), (0, 0)), mode='constant', constant_values=.5)
+            # plt.subplot(212); plt.imshow(rearrange(img[::(img.shape[0]//16), :, :, :], "(R C) H W D -> (R H) (C W) D", R=2))
+            # plt.savefig(f'{args.save_dir}/overview_{i_iter:06d}.png')
+            # plt.close()
 
 if __name__ == '__main__':
     main(parse_args())
