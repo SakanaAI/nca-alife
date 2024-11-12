@@ -73,7 +73,7 @@ def main(args):
 
         if len(args.prompts.split(",")) > 1: # doing multiple prompts
             scores = z_text @ z.T # P T (square)
-            loss_prompt = scores[jnp.arange(len(scores)), jnp.arange(len(scores))].mean()
+            loss_prompt = -scores[jnp.arange(len(scores)), jnp.arange(len(scores))].mean()
             loss_softmax = (jax.nn.softmax(scores, axis=-1).mean() + jax.nn.softmax(scores, axis=-2).mean())/2.
             loss = loss_prompt * args.coef_prompt + loss_softmax * args.coef_softmax
             loss_dict = dict(loss=loss, loss_prompt=loss_prompt, loss_softmax=loss_softmax)

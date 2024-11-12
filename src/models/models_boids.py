@@ -45,7 +45,7 @@ def get_rotation_mats(v):
 class Boids():
     def __init__(self, n_boids=64, n_nbrs=16, visual_range=0.1, speed=0.5,
                  controller='network',
-                 dt=0.01, bird_render_size=0.02, bird_render_sharpness=20):
+                 dt=0.01, bird_render_size=0.02, bird_render_sharpness=20, space_size=1., red_boid=True):
         self.n_boids = n_boids
         self.n_nbrs = n_nbrs
         self.visual_range = visual_range
@@ -54,6 +54,8 @@ class Boids():
         self.dt = dt
         self.bird_render_size = bird_render_size
         self.bird_render_sharpness = bird_render_sharpness
+        self.space_size = space_size
+        self.red_boid = red_boid
 
         self.net = BoidNetwork()
 
@@ -71,7 +73,7 @@ class Boids():
         
     def init_state(self, rng, params):
         _rng1, _rng2, _rng3 = split(rng, 3)
-        x = jax.random.uniform(_rng1, (self.n_boids, 2), minval=0., maxval=1.)
+        x = jax.random.uniform(_rng1, (self.n_boids, 2), minval=0., maxval=self.space_size)
         v = jax.random.normal(_rng2, (self.n_boids, 2))
         v = v / jnp.linalg.norm(v, axis=-1, keepdims=True)
         return dict(x=x, v=v)
@@ -117,7 +119,7 @@ class Boids():
         v = v + dv * self.dt
         v = v / jnp.linalg.norm(v, axis=-1, keepdims=True)
         x = x + self.speed * v * self.dt
-        x = x%1. # circular boundary
+        x = x%self.space_size # circular boundary
         return dict(x=x, v=v)
 
     def _step_state_simple(self, rng, state, params):
@@ -125,7 +127,8 @@ class Boids():
 
         # shape: src boids, tgt boids
         r = x[None, :, :] - x[:, None, :] # src, tgt, 2
-        r = jax.lax.select(r>0.5, r-1, jax.lax.select(r<-0.5, r+1, r))  # circular boundary
+        # r = jax.lax.select(r>0.5, r-1, jax.lax.select(r<-0.5, r+1, r))  # circular boundary
+        r = jax.lax.select(r>self.space_size/2., r-self.space_size, jax.lax.select(r<-self.space_size/2, r+self.space_size, r))  # circular boundary
         d = jnp.linalg.norm(r, axis=-1) # src, tgt
         nbr_mask = (d<self.nbr_dist) * (1-jnp.eye(self.n_boids)) # src, tgt
         n_nbrs = nbr_mask.sum(axis=-1) # src
@@ -171,7 +174,7 @@ class Boids():
         global_triangle_coords = global_triangle_coords[:, :, :2, 0]
         img = jnp.ones((img_size, img_size, 3))
 
-        x, y = jnp.linspace(0, 1, img_size), jnp.linspace(0, 1, img_size)
+        x, y = jnp.linspace(0, self.space_size, img_size), jnp.linspace(0, self.space_size, img_size)
         x, y = jnp.meshgrid(x, y, indexing='ij')
         def render_triangle(img, triangle, color=[0., 0., 0.]):
             # Compute barycentric coordinates
@@ -201,7 +204,8 @@ class Boids():
             # img = jnp.minimum(img, mask[..., None])
             return img, None
         img, _ = jax.lax.scan(render_triangle, img, global_triangle_coords)
-        img, _ = render_triangle(img, global_triangle_coords[0], color=[1., 0., 0.])
+        if self.red_boid:
+            img, _ = render_triangle(img, global_triangle_coords[0], color=[1., 0., 0.])
         return img
 
 

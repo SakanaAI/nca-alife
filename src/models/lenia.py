@@ -231,6 +231,7 @@ class Lenia:
 			else:
 				phenotype = jnp.roll(next_A, total_shift - shift, axis=(0, 1))
 			mid = self._config.world_size // 2
+			# phenotype_size = 512
 			half_size = phenotype_size // 2
 			phenotype = phenotype[mid-half_size:mid+half_size, mid-half_size:mid+half_size]
 		else:

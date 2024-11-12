@@ -46,9 +46,11 @@ def create_sim(sim_name):
         sim = ParticleLife(n_particles=5000, n_colors=6, search_space="alpha", dt=2e-3, render_radius=1e-2)  
     elif sim_name=='plife_ba':
         sim = ParticleLife(n_particles=5000, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
-    elif sim_name.startswith('plife_ba_n='):
-        n = int(sim_name.split('=')[-1])
-        sim = ParticleLife(n_particles=n, n_colors=6, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
+    elif sim_name.startswith('plife_ba;'): # plife_ba;n=1000;k=1
+        a, b, c = sim_name.split(';')
+        n = int(b.split('=')[-1])
+        k = int(c.split('=')[-1])
+        sim = ParticleLife(n_particles=n, n_colors=k, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
     elif sim_name=='plife_ba_c3':
         sim = ParticleLife(n_particles=5000, n_colors=3, search_space="beta+alpha", dt=2e-3, render_radius=1e-2)  
     elif sim_name=='dnca':
@@ -81,8 +83,11 @@ def create_sim(sim_name):
 #         return img
 
 def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='final', img_size=224,
-                       return_state=False, chunk_ends=False):
-    state_init = sim.init_state(rng, params)
+                       return_state=False, chunk_ends=False, s0=None):
+    if s0 is None:
+        state_init = sim.init_state(rng, params)
+    else:
+        state_init = s0
     if n_rollout_imgs == 'final' or n_rollout_imgs=='image' or n_rollout_imgs == 'img':
         def step_fn(state, _rng):
             next_state = sim.step_state(_rng, state, params)
@@ -122,9 +127,9 @@ def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='final', 
             return dict(rgb=vid)
 
 def rollout_and_embed_simulation(rng, params, sim, clip_model, rollout_steps, n_rollout_imgs='img',
-                                  return_state=False, chunk_ends=False):
+                                  return_state=False, chunk_ends=False, s0=None):
     data = rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs, img_size=224,
-                              return_state=return_state, chunk_ends=chunk_ends)
+                              return_state=return_state, chunk_ends=chunk_ends, s0=s0)
     if clip_model is None:
         return dict(**data, z=None)
     elif n_rollout_imgs == 'final':
