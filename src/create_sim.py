@@ -103,7 +103,10 @@ def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='final', 
             next_state = sim.step_state(_rng, state, params)
             return next_state, state
         state_final, state_vid = jax.lax.scan(step_fn, state_init, split(rng, rollout_steps))
-        vid = jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
+
+        def render_state(_, state):
+            return _, sim.render_state(state, params=params, img_size=img_size)
+        _, vid = jax.lax.scan(render_state, None, state_vid)
         if return_state:
             return dict(state_init=state_init, state_final=state_final, state_vid=state_vid, rgb=vid)
         else:
@@ -119,8 +122,9 @@ def rollout_simulation(rng, params, sim, rollout_steps, n_rollout_imgs='final', 
         else:
             idx_sample = jnp.arange(0, rollout_steps, chunk_size)
         state_vid = jax.tree.map(lambda x: x[idx_sample], state_vid)
-        vid = jax.vmap(partial(sim.render_state, params=params, img_size=img_size))(state_vid)
-
+        def render_state(_, state):
+            return _, sim.render_state(state, params=params, img_size=img_size)
+        _, vid = jax.lax.scan(render_state, None, state_vid)
         if return_state:
             return dict(state_init=state_init, state_final=state_final, state_vid=state_vid, rgb=vid)
         else:
