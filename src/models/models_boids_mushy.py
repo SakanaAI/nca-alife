@@ -51,7 +51,7 @@ class MushyBoids():
 
         self.init_dist = init_dist
 
-        assert self.k_sims < len(colors.split('-'))
+        assert self.k_sims <= len(colors.split('-'))
         self.species_colors = jnp.array([mcolors.to_rgb(f"#{c}") for c in colors.split('-')])[:self.k_sims]
 
     def default_params(self, rng):
